@@ -1,0 +1,46 @@
+[workspace]
+authors = ["sklam <1929845+sklam@users.noreply.github.com>"]
+channels = ["sklam", "main"]
+name = "numbacc"
+platforms = ["osx-arm64", "linux-64"]
+version = "0.1.0"
+
+[dependencies]
+python = ">=3.12"
+pip = "*"
+pytest = "*"
+
+[feature.mlir20.dependencies]
+mlir-python-bindings = { version = "==20.1.8", channel = "sklam" }
+
+[feature.py312.dependencies]
+python = "==3.12"
+
+[feature.numba-scfg.pypi-dependencies]
+numba-scfg = "*"
+
+[environments]
+dev = { features = ["py312", "mlir20", "numba-scfg"] }
+
+[tasks]
+
+# Sealir
+_clone-sealir = "bash scripts/checkout.sh https://github.com/sklam/sealir wip/updates deps/sealir"
+_install-sealir = "pip install -e ./deps/sealir"
+
+# SPy
+_clone-spy = "bash scripts/checkout.sh https://github.com/sklam/spy wip/numbacc_tensor deps/spy"
+_install-spy = "pip install -e './deps/spy[dev]' && make -C ./deps/spy/spy/libspy"
+
+_install-nbcc = "pip install -e ."
+
+setup-workspace = { depends-on=[
+    # setup sealir
+    "_clone-sealir", "_install-sealir",
+    # setup spy
+    "_clone-spy", "_install-spy",
+    # setup nbcc
+    "_install-nbcc",
+] }
+
+test = { cmd="pytest nbcc -v" }
