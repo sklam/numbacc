@@ -3,8 +3,8 @@ set -xe
 if [ -d "$3" ]; then
     echo "Directory $3 already exists. Checking out branch $2..."
     cd "$3"
-    git fetch origin
-    git checkout "$2"
+    git fetch origin "$2"
+    git checkout -B "$2" "FETCH_HEAD"
     git pull origin "$2"
 else
     echo "Cloning repository to $3 with branch $2..."

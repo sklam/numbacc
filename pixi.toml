@@ -26,13 +26,13 @@ dev = { features = ["py312", "mlir20", "numba-scfg"] }
 
 # Sealir
 _clone-sealir = "bash scripts/checkout.sh https://github.com/sklam/sealir wip/updates deps/sealir"
-_install-sealir = "pip install -e ./deps/sealir"
+_install-sealir = { cmd="pip install -e ./deps/sealir", inputs=["./deps/sealir/*"], outputs=["./deps/sealir/sealir.egg-info"] }
 
 # SPy
 _clone-spy = "bash scripts/checkout.sh https://github.com/sklam/spy wip/numbacc_tensor deps/spy"
-_install-spy = "pip install -e './deps/spy[dev]' && make -C ./deps/spy/spy/libspy"
+_install-spy = { cmd="pip install -e './deps/spy[dev]' && make -C ./deps/spy/spy/libspy", inputs=["./deps/spy"], outputs=["./deps/spy/spylang.egg-info"] }
 
-_install-nbcc = "pip install -e ."
+_install-nbcc = {cmd="pip install -e .", outputs=["nbcc.egg-info"]}
 
 setup-workspace = { depends-on=[
     # setup sealir
@@ -43,4 +43,4 @@ setup-workspace = { depends-on=[
     "_install-nbcc",
 ] }
 
-test = { cmd="pytest nbcc -v" }
+test = { cmd="pytest nbcc -v", depends-on=["setup-workspace"] }
