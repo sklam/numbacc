@@ -30,6 +30,7 @@ def main() -> None:
 """
     _compile(source)
 
+
 def test_basic_if_nested_1():
     source = """
 def main() -> None:
@@ -53,18 +54,39 @@ def main() -> None:
     _compile(source)
 
 
-# def test_basic_if():
-#     source = """
-# def main() -> None:
-#     a: i32
-#     b: i32
-#     c: i32
+def test_basic_while():
+    source = """
+def main() -> None:
+    a: i32
+    b: i32
+    c: i32
 
-#     a = 1
-#     b = 2
-#     while a < b:
-#         a = a + 1
+    a = 1
+    b = 2
+    while a < b:
+        a = a + 1
 
-#     print(a)
-# """
-#     _compile(source)
+    print(a)
+"""
+    _compile(source)
+
+
+def test_basic_for():
+    source = """
+from _range import range
+def main() -> None:
+    a: i32
+    b: i32
+    c: i32
+
+    a = 1
+    b = 2
+    for i in range(a, b):
+        if i == b - a:
+            print("endloop")
+            break
+        print(i)
+
+    print(a)
+"""
+    _compile(source)

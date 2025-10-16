@@ -16,7 +16,7 @@ class Node:
     opname: str
     attrdict: dict[str, Any]
 
-    IGNORED = 'loc'
+    IGNORED = "loc"
 
     def __repr__(self):
         buf = [self.opname, "("]
@@ -24,7 +24,11 @@ class Node:
             if k not in self.IGNORED:
                 buf.append(f"{k}={v}, ")
         buf.append(")")
-        return ''.join(buf)
+        return "".join(buf)
+
+    def __hash__(self):
+        return hash(id(self))
+
 
 def convert_to_node(
     node: Any,

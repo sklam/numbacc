@@ -86,6 +86,7 @@ def _print_basic_blocks(block_map: dict[str, BasicBlock]) -> None:
 def _create_and_process_scfg(block_map: dict[str, BasicBlock]) -> SCFG:
     """Create SCFG and process it, returning the head region"""
     scfg = SCFG(graph=block_map)
+
     scfg.restructure()
     # return
     return scfg
@@ -93,7 +94,7 @@ def _create_and_process_scfg(block_map: dict[str, BasicBlock]) -> SCFG:
 
 @dataclass(frozen=True)
 class SpyBasicBlock(BasicBlock):
-    body: list[Node] = field(default_factory=list)
+    body: list[Node] = field(default_factory=list, hash=False)
 
 
 def restructure(name: str, node: Node) -> None:
@@ -111,17 +112,16 @@ def restructure(name: str, node: Node) -> None:
 
     # Show final region structure
     main_region = scfg.graph[scfg.find_head()]
-    print(_show_region(main_region))
+    # print(_show_region(main_region))
 
+    _SpyScfgRenderer(scfg).view()
     # HACK
-    with open("Digraph.gv", "w") as fout:
-        fout.write(str(_SpyScfgRenderer(scfg).render_scfg()))
-
+    # with open("Digraph.gv", "w") as fout:
+    #     fout.write(str(_SpyScfgRenderer(scfg).render_scfg()))
 
 
 class _SpyScfgRenderer(SCFGRenderer):
     def render_block(self, digraph, name, block):
-
 
         node_style_kwargs = {"shape": "rect", "style": "rounded"}
         if isinstance(block, SpyBasicBlock):
@@ -133,6 +133,7 @@ class _SpyScfgRenderer(SCFGRenderer):
         else:
             super().render_block(digraph, name, block)
 
+
 @dataclass
 class BasicBlockBuilderState:
     """Mutable state for building basic blocks"""
@@ -140,6 +141,11 @@ class BasicBlockBuilderState:
     block_map: dict[str, BasicBlock]
     current_block: BasicBlock
     end_block: str | None = None
+    _loop_stack: list[dict[str, str]] = field(
+        default_factory=list
+    )  # XXX: UGLY
+    """Contains jump target for loop-break/continue
+    """
     _counter: int = field(default=0, init=False)
 
     @classmethod
@@ -194,7 +200,10 @@ class BasicBlockBuilderState:
     ) -> "BasicBlockBuilderState":
         """Create a child state for recursive calls"""
         child_state = BasicBlockBuilderState(
-            self.block_map, current_block, end_block or self.end_block
+            self.block_map,
+            current_block,
+            end_block or self.end_block,
+            _loop_stack=self._loop_stack,  # XXX: UGLY
         )
         child_state._counter = self._counter
         return child_state
@@ -227,6 +236,29 @@ def _handle_if_statement(state: BasicBlockBuilderState, stmt: Node) -> None:
     state.set_current_block(endif_block)
 
 
+def _handle_while_statement(state: BasicBlockBuilderState, stmt: Node) -> None:
+    """Handle While statement by creating loopbody/endloop blocks and processing recursively"""
+    looptest_block, loopbody_block, endloop_block = (
+        state.create_and_register_blocks(3)
+    )
+    state._loop_stack.append({"break_target": endloop_block.name})  # XXX: UGLY
+    state.replace_jump_targets_and_update((looptest_block.name,))
+    state.set_current_block(looptest_block)
+    state.append_to_current_block(stmt.attrdict["test"])
+    state.replace_jump_targets_and_update(
+        (loopbody_block.name, endloop_block.name)
+    )
+
+    loopbody_state = state.create_child_state(
+        loopbody_block, end_block=looptest_block.name
+    )
+    _build_basic_blocks(loopbody_state, stmt.attrdict["body"])
+    state.finalize_with_end_block()
+
+    state.set_current_block(endloop_block)
+    state._loop_stack.pop()  # XXX: UGLY
+
+
 def _build_basic_blocks(
     state: BasicBlockBuilderState,
     body: list[Node],
@@ -235,8 +267,14 @@ def _build_basic_blocks(
         match stmt.opname:
             case "If":
                 _handle_if_statement(state, stmt)
+            case "While":
+                _handle_while_statement(state, stmt)
             case "Return":
                 state.append_to_current_block(stmt)
+                return state.current_block
+            case "Break":
+                break_target = state._loop_stack[-1]["break_target"]
+                state.replace_jump_targets_and_update((break_target,))
                 return state.current_block
             case _:
                 state.append_to_current_block(stmt)
