@@ -1,0 +1,12 @@
+name: default
+channels:
+  - defaults
+dependencies: 
+  - make
+variables:
+prefix:
+platforms:
+  - osx-arm64
+  - linux-64
+  # - osx-64
+  # - win-64

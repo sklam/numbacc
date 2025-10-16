@@ -1,0 +1,6 @@
+# virtual-packages.yml
+subdirs:
+  osx-arm64:
+    packages:
+      __osx: "15.6.1 0"
+      __glibc: "2.17 0"

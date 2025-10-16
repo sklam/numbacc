@@ -1,0 +1,8 @@
+channels:
+  - defaults
+dependencies:
+  - sklam::mlir-python-bindings==20.1.8
+platforms:
+    - osx-arm64
+    # - linux-64
+

@@ -1,0 +1,20 @@
+name: numbacc
+
+environments:
+  default:
+    - environment.yml
+  dev:
+    - py312_environment.yml
+    - mlir20_environment.yml
+    - devtools_environment.yml
+
+commands:
+  build:
+    cmd: make build
+    environment: dev
+  dev-run:
+    cmd: zsh
+    environment: dev
+  fmt:
+    cmd: black nbcc
+    environment: dev
