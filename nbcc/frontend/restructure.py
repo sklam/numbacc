@@ -3,6 +3,7 @@ from pprint import pformat, pprint
 from textwrap import indent
 from typing import Any
 
+from numba_scfg.rendering.rendering import SCFGRenderer
 from numba_scfg.core.datastructures.ast_transforms import WritableASTBlock
 from numba_scfg.core.datastructures.basic_block import (
     BasicBlock,
@@ -82,12 +83,12 @@ def _print_basic_blocks(block_map: dict[str, BasicBlock]) -> None:
             print("    ", stmt)
 
 
-def _create_and_process_scfg(block_map: dict[str, BasicBlock]) -> RegionBlock:
+def _create_and_process_scfg(block_map: dict[str, BasicBlock]) -> SCFG:
     """Create SCFG and process it, returning the head region"""
     scfg = SCFG(graph=block_map)
     scfg.restructure()
-    # scfg.view()
-    return scfg.graph[scfg.find_head()]
+    # return
+    return scfg
 
 
 @dataclass(frozen=True)
@@ -106,11 +107,31 @@ def restructure(name: str, node: Node) -> None:
     _print_basic_blocks(block_map)
 
     # Create and process SCFG
-    region = _create_and_process_scfg(block_map)
+    scfg = _create_and_process_scfg(block_map)
 
     # Show final region structure
-    print(_show_region(region))
+    main_region = scfg.graph[scfg.find_head()]
+    print(_show_region(main_region))
 
+    # HACK
+    with open("Digraph.gv", "w") as fout:
+        fout.write(str(_SpyScfgRenderer(scfg).render_scfg()))
+
+
+
+class _SpyScfgRenderer(SCFGRenderer):
+    def render_block(self, digraph, name, block):
+
+
+        node_style_kwargs = {"shape": "rect", "style": "rounded"}
+        if isinstance(block, SpyBasicBlock):
+            label = [name, r"\n"]
+            for stmt in block.body:
+                label.extend([str(stmt), r"\n"])
+
+            digraph.node(str(name), label="".join(label), **node_style_kwargs)
+        else:
+            super().render_block(digraph, name, block)
 
 @dataclass
 class BasicBlockBuilderState:
@@ -143,7 +164,9 @@ class BasicBlockBuilderState:
         self._counter += 1
         return block
 
-    def replace_jump_targets_and_update(self, targets: tuple[str, ...]) -> None:
+    def replace_jump_targets_and_update(
+        self, targets: tuple[str, ...]
+    ) -> None:
         """Replace jump targets for current basic block and update block map"""
         self.current_block = self.block_map[self.current_block.name] = (
             self.current_block.replace_jump_targets(targets)

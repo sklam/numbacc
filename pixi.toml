@@ -6,7 +6,7 @@ platforms = ["osx-arm64", "linux-64"]
 version = "0.1.0"
 
 [dependencies]
-python = ">=3.12"
+python = "==3.12"
 pip = "*"
 pytest = "*"
 
@@ -16,17 +16,24 @@ mlir-python-bindings = { version = "==20.1.8", channel = "sklam" }
 [feature.py312.dependencies]
 python = "==3.12"
 
+[feature.format.dependencies]
+black = ">=25"
+
+[feature.gv.dependencies]
+# graphviz = "*" # graphviz DOT problem https://github.com/prefix-dev/pixi/issues/3252
+python-graphviz ="*"
+
 [feature.numba-scfg.pypi-dependencies]
 numba-scfg = "*"
 
+
 [environments]
-dev = { features = ["py312", "mlir20", "numba-scfg"] }
+dev = { features = ["py312", "mlir20",  "format", "gv", "numba-scfg"] }
 
 [tasks]
-
 # Sealir
 _clone-sealir = "bash scripts/checkout.sh https://github.com/sklam/sealir wip/updates deps/sealir"
-_install-sealir = { cmd="pip install -e ./deps/sealir", inputs=["./deps/sealir/*"], outputs=["./deps/sealir/sealir.egg-info"] }
+_install-sealir = { cmd="pip install -e ./deps/sealir --no-deps", inputs=["./deps/sealir/*"], outputs=["./deps/sealir/sealir.egg-info"] }
 
 # SPy
 _clone-spy = "bash scripts/checkout.sh https://github.com/sklam/spy wip/numbacc_tensor deps/spy"
@@ -43,4 +50,8 @@ setup-workspace = { depends-on=[
     "_install-nbcc",
 ] }
 
-test = { cmd="pytest nbcc -v", depends-on=["setup-workspace"] }
+test = { cmd="pytest nbcc -v" }
+
+format = { cmd="black nbcc" }
+
+dotshow = { args=["file"], cmd=" conda run -n gv dot -Tpdf -O {{ file }} && open {{ file }}.pdf "}
