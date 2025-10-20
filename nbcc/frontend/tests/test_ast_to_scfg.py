@@ -71,7 +71,7 @@ def main() -> None:
     _compile(source)
 
 
-def test_basic_for():
+def test_basic_for_break():
     source = """
 from _range import range
 def main() -> None:
@@ -85,6 +85,27 @@ def main() -> None:
         if i == b - a:
             print("endloop")
             break
+        print(i)
+
+    print(a)
+"""
+    _compile(source)
+
+
+def test_basic_for_continue():
+    source = """
+from _range import range
+def main() -> None:
+    a: i32
+    b: i32
+    c: i32
+
+    a = 1
+    b = 2
+    for i in range(a, b):
+        if i == b - a:
+            print("endloop")
+            continue
         print(i)
 
     print(a)

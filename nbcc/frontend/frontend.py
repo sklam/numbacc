@@ -4,11 +4,11 @@ from spy.fqn import FQN
 from spy.interop import redshift
 from spy.vm.function import W_ASTFunc
 
-from .restructure import restructure
+from .restructure import restructure, _SpyScfgRenderer
 from .spy_ast import Node, convert_to_node
 
 
-def frontend(filename: str) -> None:
+def frontend(filename: str, *, view: bool = False) -> None:
     vm, w_mod = redshift(filename)
 
     symtab: dict[FQN, Node] = {}
@@ -27,4 +27,6 @@ def frontend(filename: str) -> None:
 
     # restructure
     for fqn, func_node in symtab.items():
-        restructure(fqn.fullname, func_node)
+        scfg = restructure(fqn.fullname, func_node)
+        if view:
+            _SpyScfgRenderer(scfg).view()

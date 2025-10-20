@@ -97,10 +97,8 @@ class SpyBasicBlock(BasicBlock):
     body: list[Node] = field(default_factory=list, hash=False)
 
 
-def restructure(name: str, node: Node) -> None:
+def restructure(name: str, node: Node) -> SCFG:
     """Restructure AST node into structured control flow graph"""
-    print("---", name)
-
     # Create basic blocks from AST
     block_map = _create_basic_blocks(node)
 
@@ -109,15 +107,11 @@ def restructure(name: str, node: Node) -> None:
 
     # Create and process SCFG
     scfg = _create_and_process_scfg(block_map)
+    return scfg
 
-    # Show final region structure
-    main_region = scfg.graph[scfg.find_head()]
-    # print(_show_region(main_region))
-
-    _SpyScfgRenderer(scfg).view()
-    # HACK
-    # with open("Digraph.gv", "w") as fout:
-    #     fout.write(str(_SpyScfgRenderer(scfg).render_scfg()))
+    # # Show final region structure
+    # main_region = scfg.graph[scfg.find_head()]
+    # return main_region
 
 
 class _SpyScfgRenderer(SCFGRenderer):
@@ -241,7 +235,12 @@ def _handle_while_statement(state: BasicBlockBuilderState, stmt: Node) -> None:
     looptest_block, loopbody_block, endloop_block = (
         state.create_and_register_blocks(3)
     )
-    state._loop_stack.append({"break_target": endloop_block.name})  # XXX: UGLY
+    state._loop_stack.append(
+        {
+            "break_target": endloop_block.name,
+            "continue_target": looptest_block.name,
+        }
+    )  # XXX: UGLY
     state.replace_jump_targets_and_update((looptest_block.name,))
     state.set_current_block(looptest_block)
     state.append_to_current_block(stmt.attrdict["test"])
@@ -275,6 +274,10 @@ def _build_basic_blocks(
             case "Break":
                 break_target = state._loop_stack[-1]["break_target"]
                 state.replace_jump_targets_and_update((break_target,))
+                return state.current_block
+            case "Continue":
+                cont_target = state._loop_stack[-1]["continue_target"]
+                state.replace_jump_targets_and_update((cont_target,))
                 return state.current_block
             case _:
                 state.append_to_current_block(stmt)
