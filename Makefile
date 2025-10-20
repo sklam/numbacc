@@ -13,3 +13,7 @@ build:
 	pip install -e './deps/spy[dev]'
 	make -C ./deps/spy/spy/libspy
 	pip install -e .
+
+
+fmt:
+	black -l79 ./nbcc
