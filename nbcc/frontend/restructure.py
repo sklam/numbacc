@@ -8,8 +8,6 @@ from numba_scfg.core.datastructures.ast_transforms import WritableASTBlock
 from numba_scfg.core.datastructures.basic_block import (
     BasicBlock,
     RegionBlock,
-    SyntheticAssignment,
-    SyntheticBranch,
 )
 from numba_scfg.core.datastructures.scfg import SCFG, RegionBlock
 
@@ -71,7 +69,7 @@ def _show_region(region: RegionBlock, level: int = 0) -> str:
 def _create_basic_blocks(node: Node) -> dict[str, BasicBlock]:
     """Create basic blocks from AST node"""
     state = BasicBlockBuilderState.create_with_entry_block()
-    _build_basic_blocks(state, node.attrdict["body"])
+    _build_basic_blocks(state, node.body)
     return state.block_map
 
 
@@ -108,10 +106,6 @@ def restructure(name: str, node: Node) -> SCFG:
     # Create and process SCFG
     scfg = _create_and_process_scfg(block_map)
     return scfg
-
-    # # Show final region structure
-    # main_region = scfg.graph[scfg.find_head()]
-    # return main_region
 
 
 class _SpyScfgRenderer(SCFGRenderer):
@@ -215,17 +209,17 @@ class BasicBlockBuilderState:
 
 def _handle_if_statement(state: BasicBlockBuilderState, stmt: Node) -> None:
     """Handle If statement by creating then/else/endif blocks and processing recursively"""
-    state.append_to_current_block(stmt.attrdict["test"])
+    state.append_to_current_block(stmt.test)
     then_block, else_block, endif_block = state.create_and_register_blocks(3)
     state.replace_jump_targets_and_update((then_block.name, else_block.name))
 
     # Process then branch
     then_state = state.create_child_state(then_block, endif_block.name)
-    _build_basic_blocks(then_state, stmt.attrdict["then_body"])
+    _build_basic_blocks(then_state, stmt.then_body)
 
     # Process else branch
     else_state = state.create_child_state(else_block, endif_block.name)
-    _build_basic_blocks(else_state, stmt.attrdict["else_body"])
+    _build_basic_blocks(else_state, stmt.else_body)
 
     state.set_current_block(endif_block)
 
@@ -263,19 +257,19 @@ def _build_basic_blocks(
     body: list[Node],
 ) -> BasicBlock:
     for stmt in body:
-        match stmt.opname:
-            case "If":
+        match stmt:
+            case Node("If"):
                 _handle_if_statement(state, stmt)
-            case "While":
+            case Node("While"):
                 _handle_while_statement(state, stmt)
-            case "Return":
+            case Node("Return"):
                 state.append_to_current_block(stmt)
                 return state.current_block
-            case "Break":
+            case Node("Break"):
                 break_target = state._loop_stack[-1]["break_target"]
                 state.replace_jump_targets_and_update((break_target,))
                 return state.current_block
-            case "Continue":
+            case Node("Continue"):
                 cont_target = state._loop_stack[-1]["continue_target"]
                 state.replace_jump_targets_and_update((cont_target,))
                 return state.current_block

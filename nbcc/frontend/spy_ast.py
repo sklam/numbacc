@@ -13,14 +13,14 @@ if TYPE_CHECKING:
 class Node:
     """Simple node representation with opname and attributes dictionary."""
 
-    opname: str
-    attrdict: dict[str, Any]
+    _opname: str
+    _attrdict: dict[str, Any]
 
     IGNORED = "loc"
 
     def __repr__(self):
-        buf = [self.opname, "("]
-        for k, v in self.attrdict.items():
+        buf = [self._opname, "("]
+        for k, v in self._attrdict.items():
             if k not in self.IGNORED:
                 buf.append(f"{k}={v}, ")
         buf.append(")")
@@ -28,6 +28,12 @@ class Node:
 
     def __hash__(self):
         return hash(id(self))
+
+    def __getattr__(self, key: str) -> Any:
+        try:
+            return self._attrdict[key]
+        except KeyError:
+            raise AttributeError(key) from None
 
 
 def convert_to_node(
@@ -65,7 +71,7 @@ class Dumper:
         elif type(obj) is Symbol:
             return self.dump_Symbol(obj)
         elif type(obj) is str:
-            return Node("str", {"value": obj})
+            return obj
         else:
             return Node("literal", {"value": obj})
 
