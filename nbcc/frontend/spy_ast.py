@@ -70,7 +70,7 @@ class Dumper:
             return self.dump_list(obj)
         elif type(obj) is Symbol:
             return self.dump_Symbol(obj)
-        elif type(obj) in {str, None}:
+        elif type(obj) in {str, type(None), int, float}:
             return obj
         else:
             return Node("literal", {"value": obj})

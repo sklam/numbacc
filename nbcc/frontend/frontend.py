@@ -8,7 +8,15 @@ from spy.fqn import FQN
 from spy.interop import redshift
 from spy.vm.function import W_ASTFunc
 
-from numba_scfg.core.datastructures.basic_block import RegionBlock, BasicBlock
+from numba_scfg.core.datastructures.basic_block import (
+    RegionBlock,
+    BasicBlock,
+    SyntheticAssignment,
+    SyntheticTail,
+    SyntheticHead,
+    SyntheticFill,
+    SyntheticReturn,
+)
 from numba_scfg.core.datastructures.scfg import SCFG
 from .restructure import restructure, _SpyScfgRenderer, SCFG, SpyBasicBlock
 from .spy_ast import Node, convert_to_node
@@ -223,12 +231,16 @@ class ConvertToSExpr:
             return self.codegen(tail_block)
 
         elif len(by_kinds) == 1 and None in by_kinds:
-            [block] = by_kinds[None]
-            return self.codegen(block)
+            for blk in by_kinds[None]:
+                last = self.codegen(blk)
+            return last
         else:
             assert False, "not branch"
 
     def codegen(self, block: BasicBlock) -> ase.SExpr:
+        print("AT", block.name)
+        ctx = self._context
+        grm = ctx.grm
         match block:
             case RegionBlock():
                 if isinstance(block.subregion, SCFG):
@@ -237,18 +249,32 @@ class ConvertToSExpr:
                     return self.codegen(block.subregion)
 
             case SpyBasicBlock():
+                if not block.body:
+                    return
                 assert len(block.body) > 0
                 last_expr: ase.Expr
                 for stmt in block.body:
                     last_expr = self.emit_statement(stmt)
                 return last_expr
+
+            case SyntheticAssignment():
+                for k, v in block.variable_assignment.items():
+                    match v:
+                        case int(ival):
+                            const = grm.write(rg.PyInt(ival))
+                        case _:
+                            raise ValueError(type(v))
+                    ctx.store_local(k, const)
+
+            case SyntheticReturn():
+                return ctx.load_local("__scfg_return_value__")
+            case SyntheticTail() | SyntheticHead() | SyntheticFill():
+                # These are empty blocks
+                return ctx.get_io()
             case _:
                 raise AssertionError(type(block))
 
     def emit_statement(self, stmt: Node) -> ase.SExpr:
-
-        print("----- emit", stmt)
-
         ctx = self._context
         grm = ctx.grm
         match stmt:
@@ -261,28 +287,35 @@ class ConvertToSExpr:
                 ),
             ):
                 ctx.scope.vardefs[name] = type_fqn
+                return
             case Node(
                 "AssignLocal",
                 target=Node("StrConst", value=str(target)),
                 value=rval,
             ):
-                match rval:
-                    case Node(
-                        "Constant", value=Node("literal", value=const_value)
-                    ):
-                        match const_value:
-                            case int(ival):
-                                expr = grm.write(rg.PyInt(ival))
-                            case _:
-                                NotImplementedError(type(const_value))
-
-                    case Node("NameLocal"):
-                        expr = ctx.load_local(rval.sym.name)
-                    case _:
-                        raise NotImplementedError(rval)
-
+                expr = self.emit_expression(rval)
                 ctx.store_local(target, expr)
                 return expr
+
+            case Node("StmtExpr", value=Node() as value):
+                last = self.emit_expression(value)
+                ctx.store_local(internal_prefix("last"), last)
+                return last
+            case Node("Call"):
+                return self.emit_expression(stmt)
+            case Node("Return"):
+                ret = self.emit_expression(stmt.value)
+                ctx.store_local("__scfg_return_value__", ret)
+                return ret
+            case _:
+                raise NotImplementedError(stmt)
+
+    def emit_expression(self, node: Node) -> ase.SExpr:
+        ctx = self._context
+        grm = ctx.grm
+        match node:
+            case Node("NameLocal"):
+                return ctx.load_local(node.sym.name)
             case Node(
                 "Call",
                 func=Node(
@@ -294,23 +327,20 @@ class ConvertToSExpr:
                     rg.PyLoadGlobal(io=ctx.get_io(), name=str(callee_fqn))
                 )
 
-                def process_arg(arg):
-                    match arg:
-                        case Node("NameLocal"):
-                            return ctx.load_local(arg.sym.name)
-                        case _:
-                            raise NotImplementedError(arg)
-
                 return ctx.insert_io_node(
                     rg.PyCall(
                         io=ctx.get_io(),
                         func=callee,
-                        args=tuple(map(process_arg, args)),
+                        args=tuple(map(self.emit_expression, args)),
                     )
                 )
-            case Node("StmtExpr", value=Node() as value):
-                last = self.emit_statement(value)
-                ctx.store_local(internal_prefix("last"), last)
-                return last
+            case Node("Constant", value=int(ival)):
+                return grm.write(rg.PyInt(ival))
+
+            case Node("Constant", value=None):
+                return grm.write(rg.PyNone())
+
+            case Node("NameLocal"):
+                return ctx.load_local(node.sym.name)
             case _:
-                raise NotImplementedError(stmt)
+                raise NotImplementedError(node)
