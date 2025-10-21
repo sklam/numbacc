@@ -97,6 +97,12 @@ class SpyBasicBlock(BasicBlock):
 
 def restructure(name: str, node: Node) -> SCFG:
     """Restructure AST node into structured control flow graph"""
+    match node:
+        case Node("FuncDef"):
+            pass
+        case _:
+            raise ValueError(node)
+
     # Create basic blocks from AST
     block_map = _create_basic_blocks(node)
 

@@ -26,10 +26,7 @@ def frontend(filename: str, *, view: bool = False) -> None:
         print(fqn, w_obj)
         if isinstance(w_obj, W_ASTFunc):
             print("functype:", w_obj.w_functype)
-            print("locals:")
             if w_obj.locals_types_w is not None:
-                for varname, w_T in w_obj.locals_types_w.items():
-                    print("   ", varname, w_T)
                 node = convert_to_node(w_obj.funcdef, vm=vm)
                 pprint(node)
                 symtab[fqn] = node
@@ -37,19 +34,20 @@ def frontend(filename: str, *, view: bool = False) -> None:
 
     # restructure
     for fqn, func_node in symtab.items():
+
         scfg = restructure(fqn.fullname, func_node)
         if view:
             _SpyScfgRenderer(scfg).view()
-        convert_to_sexpr(scfg)
+        convert_to_sexpr(func_node, scfg)
 
 
-def convert_to_sexpr(scfg: SCFG):
+def convert_to_sexpr(func_node: Node, scfg: SCFG):
     with ase.Tape() as tape:
         cts = ConvertToSExpr(tape)
-        with cts.setup_function() as rb:
-            expr = cts.handle_region(scfg)
+        with cts.setup_function(func_node) as rb:
+            cts.handle_region(scfg)
 
-        region = cts.close_function(rb)
+        region = cts.close_function(rb, func_node)
 
         pprint(ase.as_tuple(region, depth=-1))
 
@@ -159,15 +157,29 @@ class ConvertToSExpr:
         self._context = ConversionContext(grm=rg.Grammar(self._tape))
 
     @contextmanager
-    def setup_function(self):
+    def setup_function(self, func_node: Node):
+        match func_node:
+            case Node("FuncDef", args=args):
+                if args:
+                    raise NotImplementedError("arguments handling")
+            case _:
+                raise ValueError(func_node)
+
         ctx = self._context
+
         with ctx.new_region([internal_prefix("io")]) as rb:
             yield rb
 
-    def close_function(self, rb: rg.RegionBegin) -> rg.RegionEnd:
+    def close_function(self, rb: rg.RegionBegin, func_node: Node) -> rg.Func:
         ctx = self._context
         vars = ctx.compute_updated_vars(rb)
-        return ctx.close_region(rb, vars)
+
+        name = func_node.name
+        assert not func_node.args
+        args = ctx.grm.write(rg.Args(()))
+        return ctx.grm.write(
+            rg.Func(fname=name, args=args, body=ctx.close_region(rb, vars))
+        )
 
     def handle_region(self, scfg: SCFG):
         ctx = self._context
