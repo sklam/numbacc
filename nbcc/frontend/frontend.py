@@ -26,7 +26,26 @@ from sealir.rvsdg import grammar as rg
 from sealir.rvsdg import internal_prefix, format_rvsdg
 
 
-def frontend(filename: str, *, view: bool = False) -> None:
+class TranslationUnit:
+    def __init__(self):
+        self._symtabs = {}
+
+    def add(self, fqn: FQN, region: SCFG) -> None:
+        self._symtabs[fqn] = region
+
+    def get_function(self, name: str) -> tuple[FQN, Node]:
+        for fqn in self._symtabs:
+            if fqn.symbol_name == name:
+                return fqn, self._symtabs[fqn]
+        raise NameError(name)
+
+    def __repr__(self):
+        cname = self.__class__.__name__
+        syms = ", ".join(map(str, self._symtabs))
+        return f"{cname}([{syms}])"
+
+
+def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
     vm, w_mod = redshift(filename)
 
     symtab: dict[FQN, Node] = {}
@@ -41,12 +60,17 @@ def frontend(filename: str, *, view: bool = False) -> None:
                 print()
 
     # restructure
+    tu = TranslationUnit()
     for fqn, func_node in symtab.items():
 
         scfg = restructure(fqn.fullname, func_node)
         if view:
             _SpyScfgRenderer(scfg).view()
-        convert_to_sexpr(func_node, scfg)
+        region = convert_to_sexpr(func_node, scfg)
+        print(format_rvsdg(region))
+        tu.add(fqn, region)
+
+    return tu
 
 
 def convert_to_sexpr(func_node: Node, scfg: SCFG):
@@ -56,10 +80,7 @@ def convert_to_sexpr(func_node: Node, scfg: SCFG):
             cts.handle_region(scfg)
 
         region = cts.close_function(rb, func_node)
-
-        pprint(ase.as_tuple(region, depth=-1))
-
-        print(format_rvsdg(region))
+        return region
 
 
 @dataclass(frozen=True)
