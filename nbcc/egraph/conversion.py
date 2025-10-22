@@ -15,6 +15,14 @@ class ExtendEGraphToRVSDG(_EGraphToRVSDG):
                 return grm.write(
                     sg.BuiltinOp(opname="print_i32", args=(io, arg))
                 )
+            case "Builtin_struct__make__", {"args": args}:
+                return grm.write(
+                    sg.BuiltinOp(opname="struct_make", args=tuple(args))
+                )
+            case "Builtin_struct__get_field__", {"struct": struct, "pos": pos}:
+                return grm.write(
+                    sg.BuiltinOp(opname="struct_get", args=(struct, pos))
+                )
             case _:
                 # Use parent's implementation for other terms.
                 return super().handle_Term(op, children, grm)

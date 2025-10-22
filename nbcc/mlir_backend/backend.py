@@ -9,6 +9,8 @@ import mlir.dialects.arith as arith
 import mlir.dialects.cf as cf
 import mlir.dialects.func as func
 import mlir.dialects.scf as scf
+
+from mlir.dialects import llvm
 import mlir.execution_engine as execution_engine
 import mlir.ir as ir
 import mlir.passmanager as passmanager
@@ -40,7 +42,7 @@ class LowerStates(ase.TraverseState):
 class Backend:
     def __init__(self):
         self.context = context = ir.Context()
-        context.allow_unregistered_dialects = True
+        # context.allow_unregistered_dialects = True
         self.f32 = ir.F32Type.get(context=context)
         self.f64 = ir.F64Type.get(context=context)
         self.i32 = ir.IntegerType.get_signless(32, context=context)
@@ -257,8 +259,6 @@ class Backend:
                 return arith.addi(lhs, rhs)
 
             case sg.BuiltinOp("print_i32", (io, operand)):
-                from mlir.dialects import llvm
-
                 io = yield io
                 operand = yield operand
 
@@ -270,19 +270,29 @@ class Backend:
                 return func.call(
                     print_i32.type.results, "print_i32", [operand]
                 )
-                # # Create a custom operation
-                # op = ir.Operation.create(
-                #     "nbcc.print_i32",  # dialect.operation_name
-                #     results=[self.i32],
-                #     operands=[operand],
-                #     # attributes={
-                #     #     "some_attr": ir.IntegerAttr.get(ir.i32Type.get(), 42),
-                #     # },
-                #     regions=0,  # number of regions
-                # )
-                # return op.result
 
-                # return llvm.call(operand.type, [operand], [], [], callee=ir.FlatSymbolRefAttr.get("print_i32"))
+            case sg.BuiltinOp("struct_make", args=raw_args):
+                args = []
+                for v in raw_args:
+                    args.append((yield v))
+
+                tys = [v.type for v in args]
+                struct_type = llvm.StructType.get_literal(tys)
+
+                struct_value = llvm.UndefOp(struct_type)
+                for i, v in enumerate(args):
+                    struct_value = llvm.insertvalue(
+                        struct_value, v, ir.DenseI64ArrayAttr.get([i])
+                    )
+                return struct_value
+
+            case sg.BuiltinOp("struct_get", args=(struct, int(pos))):
+                struct_value = yield struct
+
+                resty = self.i32  # HACK
+                return llvm.extractvalue(
+                    resty, struct_value, ir.DenseI64ArrayAttr.get([pos])
+                )
 
             # case NbOp_Gt_Int64(lhs, rhs):
             #     lhs = yield lhs

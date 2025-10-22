@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Sequence, Any
 from contextlib import contextmanager
 from pprint import pprint
 from collections import defaultdict
@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 
 from spy.fqn import FQN
 from spy.interop import redshift
-from spy.vm.function import W_ASTFunc
+from spy.vm.function import W_ASTFunc, W_BuiltinFunc
+from spy.vm.struct import W_StructType
 
 from numba_scfg.core.datastructures.basic_block import (
     RegionBlock,
@@ -27,11 +28,23 @@ from sealir.rvsdg import internal_prefix, format_rvsdg
 
 
 class TranslationUnit:
+    _symtabs: dict[FQN, Node]
+    _structs: dict[FQN, Any]
+    _builtins: dict[FQN, Any]
+
     def __init__(self):
         self._symtabs = {}
+        self._structs = {}
+        self._builtins = {}
 
     def add(self, fqn: FQN, region: SCFG) -> None:
         self._symtabs[fqn] = region
+
+    def add_struct_type(self, fqn: FQN, obj) -> None:
+        self._structs[fqn] = obj
+
+    def add_builtin(self, fqn: FQN, obj) -> None:
+        self._builtins[fqn] = obj
 
     def get_function(self, name: str) -> tuple[FQN, Node]:
         for fqn in self._symtabs:
@@ -48,6 +61,8 @@ class TranslationUnit:
 def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
     vm, w_mod = redshift(filename)
 
+    tu = TranslationUnit()
+
     symtab: dict[FQN, Node] = {}
     for fqn, w_obj in vm.fqns_by_modname(w_mod.name):
         print(fqn, w_obj)
@@ -58,9 +73,14 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
                 pprint(node)
                 symtab[fqn] = node
                 print()
+        elif isinstance(w_obj, W_BuiltinFunc):
+            tu.add_builtin(fqn, w_obj)
+        elif isinstance(w_obj, W_StructType):
+            tu.add_struct_type(fqn, w_obj)
+        else:
+            breakpoint()
 
     # restructure
-    tu = TranslationUnit()
     for fqn, func_node in symtab.items():
 
         scfg = restructure(fqn.fullname, func_node)
