@@ -17,6 +17,8 @@ from numba_scfg.core.datastructures.basic_block import (
     SyntheticHead,
     SyntheticFill,
     SyntheticReturn,
+    SyntheticExitingLatch,
+    SyntheticExitBranch,
 )
 from numba_scfg.core.datastructures.scfg import SCFG
 from .restructure import restructure, _SpyScfgRenderer, SCFG, SpyBasicBlock
@@ -116,6 +118,11 @@ class ConversionContext:
     scope_map: dict[rg.RegionBegin, Scope] = field(
         init=False, default_factory=dict
     )
+
+    @property
+    def loopcond_name(self) -> str:
+        d = len(self.scope_stack)
+        return internal_prefix("_loopcond_{d:03x}")
 
     @property
     def scope(self) -> Scope:
@@ -271,12 +278,10 @@ class ConvertToSExpr:
             ctx.update_scope(ifelse, sorted(updated_vars))
             return self.codegen(tail_block)
 
-        elif len(by_kinds) == 1 and None in by_kinds:
-            for blk in by_kinds[None]:
+        else:
+            for _, blk in crv:
                 last = self.codegen(blk)
             return last
-        else:
-            assert False, "not branch"
 
     def codegen(self, block: BasicBlock) -> ase.SExpr:
         print("AT", block.name)
@@ -285,8 +290,27 @@ class ConvertToSExpr:
         match block:
             case RegionBlock():
                 if isinstance(block.subregion, SCFG):
-                    return self.handle_region(block.subregion)
+                    if block.kind == "loop":
+                        operands = ctx.get_scope_as_operands()
+                        with ctx.new_region(
+                            ctx.get_scope_as_parameters()
+                        ) as loop_region:
+                            self.handle_region(block.subregion)
+                            loopcondvar = ctx.loopcond_name
+
+                        updated_vars = ctx.compute_updated_vars(loop_region)
+                        loop_end = ctx.close_region(loop_region, updated_vars)
+
+                        loop = ctx.grm.write(
+                            rg.Loop(body=loop_end, operands=operands)
+                        )
+                        ctx.update_scope(
+                            loop, sorted(updated_vars - {loopcondvar})
+                        )
+                    else:
+                        return self.handle_region(block.subregion)
                 else:
+                    assert block.kind != "loop"
                     return self.codegen(block.subregion)
 
             case SpyBasicBlock():
@@ -307,9 +331,23 @@ class ConvertToSExpr:
                             raise ValueError(type(v))
                     ctx.store_local(k, const)
 
+            case SyntheticExitingLatch():
+                io = ctx.get_io()
+                loopcond = grm.write(
+                    rg.PyUnaryOp(
+                        op="not", io=io, operand=ctx.load_local(block.variable)
+                    )
+                )
+                ctx.store_local(ctx.loopcond_name, loopcond)
+
             case SyntheticReturn():
                 return ctx.load_local("__scfg_return_value__")
-            case SyntheticTail() | SyntheticHead() | SyntheticFill():
+            case (
+                SyntheticTail()
+                | SyntheticHead()
+                | SyntheticFill()
+                | SyntheticExitBranch()
+            ):
                 # These are empty blocks
                 return ctx.get_io()
             case _:
@@ -383,5 +421,8 @@ class ConvertToSExpr:
 
             case Node("NameLocal"):
                 return ctx.load_local(node.sym.name)
+
+            case Node("StrConst", value=str(text)):
+                return grm.write(rg.PyStr(text))
             case _:
                 raise NotImplementedError(node)
