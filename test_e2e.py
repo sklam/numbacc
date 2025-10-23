@@ -40,7 +40,7 @@ def make_binary(module):
 
     subp.check_call(["mlir-translate", "--mlir-to-llvmir", "out.mlir", "-o", "out.ll"])
     subp.check_call(["cat", "out.ll"])
-    subp.check_call(["clang", "-o" "a.out", "out.ll", "nbrt.c"])
+    subp.check_call(["clang", "-o" "a.out", "out.ll", "-Ldeps/spy/spy/libspy/build/native/release/", "-lspy"])
 
 
 def middle_end(tu: TranslationUnit, fname: str):

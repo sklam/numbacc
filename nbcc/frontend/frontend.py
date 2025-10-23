@@ -28,6 +28,8 @@ from sealir import ase
 from sealir.rvsdg import grammar as rg
 from sealir.rvsdg import internal_prefix, format_rvsdg
 
+from ..egraph import grammar as sg
+
 
 class TranslationUnit:
     _symtabs: dict[FQN, Node]
@@ -66,14 +68,18 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
     tu = TranslationUnit()
 
     symtab: dict[FQN, Node] = {}
+
+    fqn_to_local_type = {}
     for fqn, w_obj in vm.fqns_by_modname(w_mod.name):
         print(fqn, w_obj)
         if isinstance(w_obj, W_ASTFunc):
             print("functype:", w_obj.w_functype)
             if w_obj.locals_types_w is not None:
+                print(w_obj.locals_types_w)
                 node = convert_to_node(w_obj.funcdef, vm=vm)
                 pprint(node)
                 symtab[fqn] = node
+                fqn_to_local_type[fqn] = w_obj.locals_types_w
                 print()
         elif isinstance(w_obj, W_BuiltinFunc):
             tu.add_builtin(fqn, w_obj)
@@ -88,16 +94,16 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
         scfg = restructure(fqn.fullname, func_node)
         if view:
             _SpyScfgRenderer(scfg).view()
-        region = convert_to_sexpr(func_node, scfg)
+        region = convert_to_sexpr(func_node, scfg, fqn_to_local_type[fqn])
         print(format_rvsdg(region))
         tu.add(fqn, region)
 
     return tu
 
 
-def convert_to_sexpr(func_node: Node, scfg: SCFG):
+def convert_to_sexpr(func_node: Node, scfg: SCFG, local_types: dict[str, Any]):
     with ase.Tape() as tape:
-        cts = ConvertToSExpr(tape)
+        cts = ConvertToSExpr(tape, local_types)
         with cts.setup_function(func_node) as rb:
             cts.handle_region(scfg)
 
@@ -113,7 +119,8 @@ class Scope:
 
 @dataclass(frozen=True)
 class ConversionContext:
-    grm: rg.Grammar
+    grm: sg.Grammar
+    local_types: dict[str, Any]
     scope_stack: list = field(init=False, default_factory=list)
     scope_map: dict[rg.RegionBegin, Scope] = field(
         init=False, default_factory=dict
@@ -122,7 +129,7 @@ class ConversionContext:
     @property
     def loopcond_name(self) -> str:
         d = len(self.scope_stack)
-        return internal_prefix("_loopcond_{d:03x}")
+        return internal_prefix(f"_loopcond_{d:03x}")
 
     @property
     def scope(self) -> Scope:
@@ -155,10 +162,13 @@ class ConversionContext:
 
     @contextmanager
     def new_region(self, region_parameters: Sequence[str]):
+
         write = self.grm.write
+
         rb = write(
             rg.RegionBegin(
-                attrs=write(rg.Attrs(())), inports=tuple(region_parameters)
+                attrs=write(rg.Attrs(())),
+                inports=tuple(region_parameters),
             )
         )
 
@@ -208,9 +218,11 @@ class ConversionContext:
 
 
 class ConvertToSExpr:
-    def __init__(self, tape: ase.Tape):
+    def __init__(self, tape: ase.Tape, local_types: dict[str, Any]):
         self._tape = tape
-        self._context = ConversionContext(grm=rg.Grammar(self._tape))
+        self._context = ConversionContext(
+            grm=sg.Grammar(self._tape), local_types=local_types
+        )
 
     @contextmanager
     def setup_function(self, func_node: Node):

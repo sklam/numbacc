@@ -43,11 +43,16 @@ class Backend:
     def __init__(self):
         self.context = context = ir.Context()
         # context.allow_unregistered_dialects = True
-        self.f32 = ir.F32Type.get(context=context)
-        self.f64 = ir.F64Type.get(context=context)
-        self.i32 = ir.IntegerType.get_signless(32, context=context)
-        self.i64 = ir.IntegerType.get_signless(64, context=context)
-        self.boo = ir.IntegerType.get_signless(1, context=context)
+        self._declared = {}
+        with context:
+            self.f32 = ir.F32Type.get(context=context)
+            self.f64 = ir.F64Type.get(context=context)
+            self.i8 = ir.IntegerType.get_signless(8, context=context)
+            self.i32 = ir.IntegerType.get_signless(32, context=context)
+            self.i64 = ir.IntegerType.get_signless(64, context=context)
+            self.boolean = ir.IntegerType.get_signless(1, context=context)
+            self.io_type = ir.IntegerType.get_signless(1, context=context)
+            self.llvm_ptr = ir.Type.parse("!llvm.ptr")
 
     def lower_type(self, ty: NbOp_Type):
         """Type Lowering
@@ -191,7 +196,7 @@ class Backend:
                 argvalues = []
                 for k in body.begin.inports:
                     if k == internal_prefix("io"):
-                        v = arith.constant(self.i32, 0)
+                        v = arith.constant(self.io_type, 0)
                     else:
                         v = names[k]
                     argvalues.append(v)
@@ -244,7 +249,7 @@ class Backend:
 
             case rg.PyBool(int(ival)):
                 with state.constant_block:
-                    const = arith.constant(self.boo, ival)
+                    const = arith.constant(self.boolean, ival)
                 return const
 
             case rg.PyFloat(float(fval)):
@@ -252,24 +257,78 @@ class Backend:
                     const = arith.constant(self.f64, fval)
                 return const
 
+            case rg.PyStr(str(strval)):
+                with self.module_body:
+                    encoded = strval.encode("utf8")
+                    length = len(encoded)
+
+                    struct_type = ir.Type.parse(
+                        f"!llvm.struct<(i64, array<{length} x i8>)>"
+                    )
+                    struct_value = struct_value = ir.ArrayAttr.get(
+                        [
+                            ir.IntegerAttr.get(self.i64, length),
+                            ir.StringAttr.get(encoded),
+                        ]
+                    )
+
+                    sym_name = ".const.str" + str(hash(expr))
+                    llvm.GlobalOp(
+                        global_type=struct_type,
+                        sym_name=sym_name,
+                        linkage=ir.Attribute.parse("#llvm.linkage<private>"),
+                        constant=True,
+                        value=struct_value,
+                        addr_space=0,
+                    )
+                with state.constant_block:
+                    ptr_type = self.llvm_ptr
+                    str_addr = llvm.AddressOfOp(
+                        ptr_type, ir.FlatSymbolRefAttr.get(sym_name)
+                    )
+
+                return str_addr
+
             # NBCC specific
             case sg.BuiltinOp("i32_add", (lhs, rhs)):
                 lhs = yield lhs
                 rhs = yield rhs
                 return arith.addi(lhs, rhs)
 
+            case sg.BuiltinOp("i32_sub", (lhs, rhs)):
+                lhs = yield lhs
+                rhs = yield rhs
+                return arith.subi(lhs, rhs)
+
+            case sg.BuiltinOp("i32_gt", (lhs, rhs)):
+                lhs = yield lhs
+                rhs = yield rhs
+                return arith.cmpi(arith.CmpIPredicate.sgt, lhs, rhs)
+
             case sg.BuiltinOp("print_i32", (io, operand)):
                 io = yield io
                 operand = yield operand
 
-                with self.module_body:
-                    print_i32 = func.FuncOp(
-                        "print_i32", ([self.i32], []), visibility="private"
-                    )
-
-                return func.call(
-                    print_i32.type.results, "print_i32", [operand]
+                print_fn = self.declare_builtins(
+                    "spy_builtins$print_i32", [self.i32], []
                 )
+                func.call(
+                    print_fn.type.results, "spy_builtins$print_i32", [operand]
+                )
+                return io
+
+            case sg.BuiltinOp("print_str", (io, operand)):
+                io = yield io
+                operand = yield operand
+
+                print_fn = self.declare_builtins(
+                    "spy_builtins$print_str", [self.llvm_ptr], []
+                )
+
+                func.call(
+                    print_fn.type.results, "spy_builtins$print_str", [operand]
+                )
+                return io
 
             case sg.BuiltinOp("struct_make", args=raw_args):
                 args = []
@@ -342,7 +401,7 @@ class Backend:
             #     opval = yield operand
             #     return arith.cmpi(0, opval, arith.constant(self.i64, 0))
             case rg.PyBool(val):
-                return arith.constant(self.boo, val)
+                return arith.constant(self.boolean, val)
 
             case rg.PyInt(val):
                 return arith.constant(self.i64, val)
@@ -351,37 +410,59 @@ class Backend:
                 cond=cond, body=body, orelse=orelse, operands=operands
             ):
                 condval = yield cond
-                raise NotImplementedError
+                operand_vals = []
+                for op in operands:
+                    operand_vals.append((yield op))
 
-                # process operands
-                rettys = Attributes(body.begin.attrs)
-                result_tys = []
-                for i in range(0, rettys.num_output_types() + 1):
-                    out_ty = rettys.get_output_type(i)
-                    if out_ty is not None:
-                        match out_ty.name:
-                            case "Int64":
-                                result_tys.append(self.i64)
-                            case "Float64":
-                                result_tys.append(self.f64)
-                            case "Bool":
-                                result_tys.append(self.boo)
-                    else:
-                        result_tys.append(self.i32)
+                result_tys: list[ir.Type] = []
 
+                # MLIR Workaround: We need to create detached blocks first to
+                # build the then/else bodies to know about the MLIR types.
+
+                with state.push(operand_vals):
+                    # Make a detached module to temporarily house the blocks
+                    fake = ir.Module.create()
+                    then_block = fake.body.create_after()
+                    with ir.InsertionPoint(then_block):
+                        value_body = yield body
+                        scf.YieldOp([x for x in value_body])
+                        result_tys.extend(x.type for x in value_body)
+
+                    else_block = then_block.create_after()
+                    with ir.InsertionPoint(else_block):
+                        value_else = yield orelse
+                        scf.YieldOp([x for x in value_else])
+                        for x, expected in zip(
+                            value_else, result_tys, strict=True
+                        ):
+                            assert x.type == expected
+
+                # Build the MLIR If-else
                 if_op = scf.IfOp(
-                    cond=condval, results_=result_tys, hasElse=bool(orelse)
+                    cond=condval, results_=result_tys, hasElse=True
                 )
 
+                # Move operations from detached then_block
+                # to actual IfOp then_block
                 with ir.InsertionPoint(if_op.then_block):
-                    value_else = yield body
-                    scf.YieldOp([x for x in value_else])
+                    zero = arith.constant(self.i32, 0)
+                    insertpt = arith.OrIOp(zero, zero)
 
+                    for op in list(then_block.operations):
+                        op.move_after(insertpt)
+                        insertpt = op
+
+                # Move operations from detached else_block
+                # to actual IfOp else_block
                 with ir.InsertionPoint(if_op.else_block):
-                    value_else = yield orelse
-                    scf.YieldOp([x for x in value_else])
+                    zero = arith.constant(self.i32, 0)
+                    insertpt = arith.OrIOp(zero, zero)
+                    for op in list(else_block.operations):
+                        op.move_after(insertpt)
+                        insertpt = op
 
                 return if_op.results
+
             case rg.Loop(body=rg.RegionEnd() as body, operands=operands):
                 raise NotImplementedError
                 rettys = Attributes(body.begin.attrs)
@@ -400,7 +481,7 @@ class Backend:
                             case "Float64":
                                 result_tys.append(self.f64)
                             case "Bool":
-                                result_tys.append(self.boo)
+                                result_tys.append(self.boolean)
                     else:
                         result_tys.append(self.i32)
 
@@ -426,7 +507,9 @@ class Backend:
                 return while_op_res
 
             case _:
-                raise NotImplementedError(expr, type(expr), ase.as_tuple(expr))
+                raise NotImplementedError(
+                    expr, type(expr), ase.as_tuple(expr, depth=3)
+                )
 
     # ## JIT Compilation
     #
@@ -571,3 +654,15 @@ class Backend:
             return res_val
         else:
             return res_ptr.contents.value
+
+    def declare_builtins(self, sym_name, argtypes, restypes):
+        if sym_name in self._declared:
+            return self._declared[sym_name]
+
+        with self.module_body:
+            ret = self._declared[sym_name] = func.FuncOp(
+                sym_name,
+                (argtypes, restypes),
+                visibility="private",
+            )
+        return ret
