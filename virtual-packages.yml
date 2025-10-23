@@ -3,4 +3,7 @@ subdirs:
   osx-arm64:
     packages:
       __osx: "15.6.1 0"
+  
+  linux-64:
+    packages:
       __glibc: "2.17 0"

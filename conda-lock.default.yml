@@ -13,8 +13,8 @@
 version: 1
 metadata:
   content_hash:
-    osx-arm64: 7f2cb0de136a1ad84a8e9d163d1d9173385c9b395c4284ad28eb6d24f455175c
-    linux-64: 01b66f78505bb2fdf80e960569662fcd080fc8baaa5b534d99942842db2625f5
+    osx-arm64: 53161fd1835b7e6a714ae71c9cfee3314b5f365b52813193f9fd2560b334ae95
+    linux-64: 89a022a707b192927991b98e84b96932ac0c45c65f1e048c678cbfbf9a9ab297
   channels:
   - url: defaults
     used_env_vars: []
@@ -24,7 +24,7 @@ metadata:
   sources:
   - environment.yml
   time_metadata:
-    created_at: '2025-10-16T16:34:43Z'
+    created_at: '2025-10-23T15:00:40Z'
 package:
 - name: _libgcc_mutex
   version: '0.1'
@@ -37,16 +37,43 @@ package:
     sha256: 476626712f60e5ef0fe04c354727152b1ee5285d57ccd3575c7be930122bd051
   category: main
   optional: false
-- name: libgcc-ng
-  version: 9.1.0
+- name: _openmp_mutex
+  version: '5.1'
   manager: conda
   platform: linux-64
   dependencies:
-    _libgcc_mutex: '*'
-  url: https://repo.anaconda.com/pkgs/main/linux-64/libgcc-ng-9.1.0-hdf63c60_0.conda
+    _libgcc_mutex: '0.1'
+    libgomp: '>=7.5.0'
+  url: https://repo.anaconda.com/pkgs/main/linux-64/_openmp_mutex-5.1-1_gnu.conda
   hash:
-    md5: 80a23105874059534307086faae566c5
-    sha256: 9f867b7bf107d4999f91b7f6a4f930c25e82a859013fba4ded608d78f7da5aa9
+    md5: 71d281e9c2192cb3fa425655a8defb85
+    sha256: 576011048d23f2e03372263493c5529f802286ff53e8426df99a5b11cc2572f3
+  category: main
+  optional: false
+- name: libgcc-ng
+  version: 11.2.0
+  manager: conda
+  platform: linux-64
+  dependencies:
+    __glibc: '>=2.17'
+    _libgcc_mutex: '*'
+    _openmp_mutex: ''
+  url: https://repo.anaconda.com/pkgs/main/linux-64/libgcc-ng-11.2.0-h1234567_1.conda
+  hash:
+    md5: a87728dabf3151fb9cfa990bd2eb0464
+    sha256: cdcce11f1c6ca57ba686ab92f3a5c122efe1e0630e00c6ad275624ce79008aa7
+  category: main
+  optional: false
+- name: libgomp
+  version: 11.2.0
+  manager: conda
+  platform: linux-64
+  dependencies:
+    _libgcc_mutex: '0.1'
+  url: https://repo.anaconda.com/pkgs/main/linux-64/libgomp-11.2.0-h1234567_1.conda
+  hash:
+    md5: b372c0eea9b60732fdae4b817a63c8cd
+    sha256: a1c6e599df45e116af81c36ec4c9efb1793fa3a0b854dd90dd6c8813cd476e90
   category: main
   optional: false
 - name: make
