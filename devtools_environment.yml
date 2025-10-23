@@ -8,3 +8,4 @@ dependencies:
   - pip
   - pip:
     - numba-scfg 
+    - egglog ==10

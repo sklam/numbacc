@@ -243,7 +243,7 @@ def _handle_while_statement(state: BasicBlockBuilderState, stmt: Node) -> None:
     )  # XXX: UGLY
     state.replace_jump_targets_and_update((looptest_block.name,))
     state.set_current_block(looptest_block)
-    state.append_to_current_block(stmt.attrdict["test"])
+    state.append_to_current_block(stmt.test)
     state.replace_jump_targets_and_update(
         (loopbody_block.name, endloop_block.name)
     )
@@ -251,7 +251,7 @@ def _handle_while_statement(state: BasicBlockBuilderState, stmt: Node) -> None:
     loopbody_state = state.create_child_state(
         loopbody_block, end_block=looptest_block.name
     )
-    _build_basic_blocks(loopbody_state, stmt.attrdict["body"])
+    _build_basic_blocks(loopbody_state, stmt.body)
     state.finalize_with_end_block()
 
     state.set_current_block(endloop_block)
