@@ -19,7 +19,7 @@ from sealir import ase
 from sealir.rvsdg import grammar as rg
 from sealir.rvsdg import internal_prefix
 
-from ..egraph import grammar as sg
+from ..frontend import grammar as sg
 
 # ## MLIR Backend Implementation
 #

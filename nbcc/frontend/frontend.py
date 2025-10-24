@@ -24,8 +24,9 @@ from spy.fqn import FQN
 from spy.interop import redshift
 from spy.vm.function import W_ASTFunc, W_BuiltinFunc
 from spy.vm.struct import W_StructType
+from spy.location import Loc
 
-from ..egraph import grammar as sg
+from . import grammar as sg
 from .restructure import SCFG, SpyBasicBlock, _SpyScfgRenderer, restructure
 from .spy_ast import Node, convert_to_node
 

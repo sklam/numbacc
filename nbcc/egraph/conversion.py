@@ -1,5 +1,5 @@
 from sealir.eqsat.rvsdg_extract_details import EGraphToRVSDG as _EGraphToRVSDG
-from . import grammar as sg
+from ..frontend import grammar as sg
 
 
 class ExtendEGraphToRVSDG(_EGraphToRVSDG):
