@@ -4,7 +4,8 @@ class Point:
     y: i32
 
 
-def main() -> None:
+def main() -> int:
     p = Point(10, 32)
     c = p.x + p.y
     print(c)
+    return 0

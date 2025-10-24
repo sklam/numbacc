@@ -3,25 +3,23 @@ from __future__ import annotations
 import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, TypedDict
+from typing import Callable
 
 import mlir.dialects.arith as arith
 import mlir.dialects.cf as cf
 import mlir.dialects.func as func
 import mlir.dialects.scf as scf
-
-from mlir.dialects import llvm
 import mlir.execution_engine as execution_engine
 import mlir.ir as ir
 import mlir.passmanager as passmanager
 import mlir.runtime as runtime
 import numpy as np
+from mlir.dialects import llvm
 from sealir import ase
 from sealir.rvsdg import grammar as rg
 from sealir.rvsdg import internal_prefix
 
 from ..egraph import grammar as sg
-
 
 # ## MLIR Backend Implementation
 #
@@ -212,11 +210,7 @@ class Backend:
                     retidx = portnames.index(internal_prefix("ret"))
                 except ValueError as e:
                     assert "!ret" in str(e)
-                    if expr.fname == "main":
-                        # HACK
-                        func.ReturnOp([arith.constant(self.i32, 0)])
-                    else:
-                        func.ReturnOp([])
+                    func.ReturnOp([])
                 else:
                     retval = outs[retidx]
                     func.ReturnOp([self._cast_return_value(retval)])

@@ -12,7 +12,7 @@ e2e_dir = Path(os.path.dirname(nbcc.__file__)) / ".." / "examples" / "e2e"
 
 
 @contextmanager
-def make_temp_directory() -> Generator[Path]:
+def make_temp_directory() -> Generator[Path, None, None]:
     with tempfile.TemporaryDirectory(delete=False) as dirpath:
         yield Path(dirpath)
 

@@ -1,4 +1,4 @@
-def main() -> None:
+def main() -> i32:
     n = 10
     c = 0
     i = 0
@@ -11,3 +11,5 @@ def main() -> None:
     print("endloop")
     print(i)
     print(c)
+
+    return 0

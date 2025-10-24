@@ -247,11 +247,19 @@ class ConvertToSExpr:
 
     def close_function(self, rb: rg.RegionBegin, func_node: Node) -> rg.Func:
         ctx = self._context
-        vars = ctx.compute_updated_vars(rb)
+        vars = {internal_prefix("io"), internal_prefix("ret")}
 
         name = func_node.name
         assert not func_node.args
         args = ctx.grm.write(rg.Args(()))
+
+        # redirect return value
+        scope_map = ctx.scope_map[rb]
+        scope_map.local_vars[internal_prefix("ret")] = scope_map.local_vars[
+            "__scfg_return_value__"
+        ]
+        vars.add(internal_prefix("ret"))
+
         return ctx.grm.write(
             rg.Func(fname=name, args=args, body=ctx.close_region(rb, vars))
         )
@@ -384,7 +392,8 @@ class ConvertToSExpr:
                 ctx.store_local(ctx.loopcond_name, loopcond)
 
             case SyntheticReturn():
-                return ctx.load_local("__scfg_return_value__")
+                ctx.load_local("__scfg_return_value__")
+                return ctx.get_io()
             case (
                 SyntheticTail()
                 | SyntheticHead()

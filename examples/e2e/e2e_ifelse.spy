@@ -1,4 +1,4 @@
-def main() -> None:
+def main() -> i32:
     a = 23
     b = 46
     if a > b:
@@ -18,3 +18,5 @@ def main() -> None:
         print("b is bigger")
     print('endif')
     print(c)
+
+    return 0
