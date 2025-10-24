@@ -19,6 +19,14 @@ class ExtendEGraphToRVSDG(_EGraphToRVSDG):
                 return grm.write(
                     sg.BuiltinOp(opname="i32_gt", args=(lhs, rhs))
                 )
+            case "Op_i32_lt", {"lhs": lhs, "rhs": rhs}:
+                return grm.write(
+                    sg.BuiltinOp(opname="i32_lt", args=(lhs, rhs))
+                )
+            case "Op_i32_not", {"operand": operand}:
+                return grm.write(
+                    sg.BuiltinOp(opname="i32_not", args=(operand,))
+                )
             case "Builtin_print_i32", {"io": io, "arg": arg}:
                 return grm.write(
                     sg.BuiltinOp(opname="print_i32", args=(io, arg))

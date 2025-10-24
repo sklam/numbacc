@@ -15,7 +15,9 @@ def egraph_optimize(egraph: egglog.EGraph):
 
 def make_schedule() -> egglog.Schedule:
     return (
-        ruleset_simplify_builtin_arith | ruleset_simplify_builtin_print
+        ruleset_simplify_builtin_arith
+        | ruleset_simplify_builtin_print
+        | ruleset_typing
     ).saturate()
 
 
@@ -28,7 +30,15 @@ def Op_i32_sub(lhs: Term, rhs: Term) -> Term: ...
 
 
 @egglog.function
+def Op_i32_lt(lhs: Term, rhs: Term) -> Term: ...
+
+
+@egglog.function
 def Op_i32_gt(lhs: Term, rhs: Term) -> Term: ...
+
+
+@egglog.function
+def Op_i32_not(operand: Term) -> Term: ...
 
 
 @egglog.function
@@ -47,16 +57,28 @@ def Builtin_struct__make__(args: TermList) -> Term: ...
 def Builtin_struct__get_field__(struct: Term, pos: egglog.i64) -> Term: ...
 
 
+@egglog.function
+def VarAnn(
+    typename: egglog.StringLike, symbol: egglog.StringLike, value: Term
+) -> Term: ...
+
+
 @egglog.ruleset
 def ruleset_simplify_builtin_arith(
-    io: Term, lhs: Term, rhs: Term, argvec: egglog.Vec[Term], call: Term
+    io: Term,
+    operand: Term,
+    lhs: Term,
+    rhs: Term,
+    argvec: egglog.Vec[Term],
+    call: Term,
 ):
-    KNOWN_OPS = {
+    BINOPS = {
         "operator::i32_add": Op_i32_add,
         "operator::i32_sub": Op_i32_sub,
         "operator::i32_gt": Op_i32_gt,
+        "operator::i32_lt": Op_i32_lt,
     }
-    for fname, ctor in KNOWN_OPS.items():
+    for fname, ctor in BINOPS.items():
         yield egglog.rule(
             call
             == py.Py_Call(
@@ -71,6 +93,18 @@ def ruleset_simplify_builtin_arith(
             union(call.getPort(0)).with_(io),
             union(call.getPort(1)).with_(ctor(lhs, rhs)),
         )
+
+    # Handle PyUnaryOp not
+    yield egglog.rule(
+        call
+        == py.Py_NotIO(
+            io=io,
+            term=operand,
+        ),
+    ).then(
+        union(call.getPort(0)).with_(io),
+        union(call.getPort(1)).with_(Op_i32_not(operand)),
+    )
 
 
 @egglog.ruleset
@@ -147,3 +181,11 @@ def create_ruleset_struct__get_field__(w_obj, field_pos: int):
 
     ruleset_struct__get_field__.__name__ += fname
     return egglog.ruleset(ruleset_struct__get_field__)
+
+
+@egglog.ruleset
+def ruleset_typing(x: Term):
+    yield egglog.rewrite(
+        # Shortcut remove VarAnnq
+        VarAnn(_w(egglog.String), _w(egglog.String), value=x)
+    ).to(x)

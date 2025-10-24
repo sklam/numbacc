@@ -135,6 +135,14 @@ class ConversionContext:
     def scope(self) -> Scope:
         return self.scope_stack[-1]
 
+    def mark_local_type(self, target: str, expr: ase.SExpr) -> ase.SExpr:
+        ty = self.local_types[target]
+        return self.grm.write(
+            sg.VarAnnotation(
+                typename=ty.fqn.fullname, symbol=target, value=expr
+            )
+        )
+
     def store_local(self, target: str, expr: ase.SExpr) -> None:
         self.scope.local_vars[target] = expr
 
@@ -164,7 +172,6 @@ class ConversionContext:
     def new_region(self, region_parameters: Sequence[str]):
 
         write = self.grm.write
-
         rb = write(
             rg.RegionBegin(
                 attrs=write(rg.Attrs(())),
@@ -304,18 +311,41 @@ class ConvertToSExpr:
                 if isinstance(block.subregion, SCFG):
                     if block.kind == "loop":
                         operands = ctx.get_scope_as_operands()
-                        with ctx.new_region(
-                            ctx.get_scope_as_parameters()
-                        ) as loop_region:
+                        operand_names = list(ctx.get_scope_as_parameters())
+                        with ctx.new_region(operand_names) as loop_region:
                             self.handle_region(block.subregion)
                             loopcondvar = ctx.loopcond_name
 
                         updated_vars = ctx.compute_updated_vars(loop_region)
                         loop_end = ctx.close_region(loop_region, updated_vars)
 
+                        # TODO: this should use a rewrite pass
+                        #
+                        # Redo the loop region so that the incoming ports
+                        # matches the outgoing ports
+                        new_vars = sorted(updated_vars - {loopcondvar})
+                        with ctx.new_region(new_vars) as loop_region:
+                            self.handle_region(block.subregion)
+                            loopcondvar = ctx.loopcond_name
+
+                        updated_vars = ctx.compute_updated_vars(loop_region)
+                        loop_end = ctx.close_region(loop_region, updated_vars)
+
+                        original = dict(zip(operand_names, operands))
+
+                        new_operands = []
+                        for k in new_vars:
+                            if k in original:
+                                new_operands.append(original[k])
+                            else:
+                                new_operands.append(grm.write(rg.Undef(k)))
+
                         loop = ctx.grm.write(
-                            rg.Loop(body=loop_end, operands=operands)
+                            rg.Loop(
+                                body=loop_end, operands=tuple(new_operands)
+                            )
                         )
+
                         ctx.update_scope(
                             loop, sorted(updated_vars - {loopcondvar})
                         )
@@ -345,11 +375,12 @@ class ConvertToSExpr:
 
             case SyntheticExitingLatch():
                 io = ctx.get_io()
-                loopcond = grm.write(
+                loopcond = ctx.insert_io_node(
                     rg.PyUnaryOp(
                         op="not", io=io, operand=ctx.load_local(block.variable)
                     )
                 )
+
                 ctx.store_local(ctx.loopcond_name, loopcond)
 
             case SyntheticReturn():
@@ -385,13 +416,13 @@ class ConvertToSExpr:
                 value=rval,
             ):
                 expr = self.emit_expression(rval)
+                expr = ctx.mark_local_type(target, expr)
                 ctx.store_local(target, expr)
                 return expr
 
             case Node("StmtExpr", value=Node() as value):
-                last = self.emit_expression(value)
-                ctx.store_local(internal_prefix("last"), last)
-                return last
+                self.emit_expression(value)
+                return ctx.get_io()
             case Node("Call"):
                 return self.emit_expression(stmt)
             case Node("Return"):

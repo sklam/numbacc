@@ -300,10 +300,23 @@ class Backend:
                 rhs = yield rhs
                 return arith.subi(lhs, rhs)
 
+            case sg.BuiltinOp("i32_lt", (lhs, rhs)):
+                lhs = yield lhs
+                rhs = yield rhs
+                return arith.cmpi(arith.CmpIPredicate.slt, lhs, rhs)
+
             case sg.BuiltinOp("i32_gt", (lhs, rhs)):
                 lhs = yield lhs
                 rhs = yield rhs
                 return arith.cmpi(arith.CmpIPredicate.sgt, lhs, rhs)
+
+            case sg.BuiltinOp("i32_not", (operand,)):
+                operand = yield operand
+                return arith.cmpi(
+                    arith.CmpIPredicate.eq,
+                    operand,
+                    arith.constant(self.i32, 0),
+                )
 
             case sg.BuiltinOp("print_i32", (io, operand)):
                 io = yield io
@@ -464,29 +477,17 @@ class Backend:
                 return if_op.results
 
             case rg.Loop(body=rg.RegionEnd() as body, operands=operands):
-                raise NotImplementedError
-                rettys = Attributes(body.begin.attrs)
                 # process operands
-                ops = []
+                operand_vals = []
                 for op in operands:
-                    ops.append((yield op))
+                    operand_vals.append((yield op))
 
                 result_tys = []
-                for i in range(1, rettys.num_output_types() + 1):
-                    out_ty = rettys.get_output_type(i)
-                    if out_ty is not None:
-                        match out_ty.name:
-                            case "Int64":
-                                result_tys.append(self.i64)
-                            case "Float64":
-                                result_tys.append(self.f64)
-                            case "Bool":
-                                result_tys.append(self.boolean)
-                    else:
-                        result_tys.append(self.i32)
+                for op in operand_vals:
+                    result_tys.append(op.type)
 
                 while_op = scf.WhileOp(
-                    results_=result_tys, inits=[op for op in ops]
+                    results_=result_tys, inits=[op for op in operand_vals]
                 )
                 before_block = while_op.before.blocks.append(*result_tys)
                 after_block = while_op.after.blocks.append(*result_tys)
@@ -505,6 +506,10 @@ class Backend:
 
                 while_op_res = scf._get_op_results_or_values(while_op)
                 return while_op_res
+
+            case rg.Undef(name):
+                # HACK
+                return arith.constant(self.i32, 0)
 
             case _:
                 raise NotImplementedError(

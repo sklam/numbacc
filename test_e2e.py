@@ -43,10 +43,23 @@ def make_binary(module):
     subp.check_call(["clang", "-o" "a.out", "out.ll", "-Ldeps/spy/spy/libspy/build/native/release/", "-lspy"])
 
 
+def extra_egraph(expr):
+    from nbcc.egraph.rules import VarAnn
+    import nbcc.egraph.grammar as sg
+    match expr:
+        case sg.VarAnnotation(typename=typename, symbol=symbol, value=expr):
+            expr = yield expr
+            return VarAnn(typename, symbol, expr)
+        case _:
+            raise NotImplementedError
+
+
 def middle_end(tu: TranslationUnit, fname: str):
     fqn, func_region = tu.get_function(fname)
     print(fqn, func_region)
-    memo = egraph_conversion(func_region)
+
+
+    memo = egraph_conversion(func_region, extra_handle=extra_egraph)
 
     root = GraphRoot(memo[func_region])
     egraph = EGraph()
