@@ -255,9 +255,10 @@ class ConvertToSExpr:
 
         # redirect return value
         scope_map = ctx.scope_map[rb]
-        scope_map.local_vars[internal_prefix("ret")] = scope_map.local_vars[
-            "__scfg_return_value__"
-        ]
+        if not (retval := scope_map.local_vars.get("__scfg_return_value__")):
+            retval = ctx.grm.write(rg.PyNone())
+
+        scope_map.local_vars[internal_prefix("ret")] = retval
         vars.add(internal_prefix("ret"))
 
         return ctx.grm.write(
