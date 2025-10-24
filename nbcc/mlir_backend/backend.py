@@ -52,27 +52,24 @@ class Backend:
             self.io_type = ir.IntegerType.get_signless(1, context=context)
             self.llvm_ptr = ir.Type.parse("!llvm.ptr")
 
-    def lower_type(self, ty: NbOp_Type):
+    def lower_type(self, ty: str) -> ir.Type:
         """Type Lowering
 
         Convert SealIR types to MLIR types for compilation.
         """
         match ty:
-            case NbOp_Type("Int64"):
-                return self.i64
-            case NbOp_Type("Float64"):
-                return self.f64
-            case NbOp_Type("Float32"):
-                return self.f32
+            case "builtins::i32":
+                return self.i32
         raise NotImplementedError(f"unknown type: {ty}")
 
-    def get_return_types(self, root):
-        return
-        # return (
-        #     self.lower_type(
-        #         Attributes(root.body.begin.attrs).get_return_type(root.body)
-        #     ),
-        # )
+    def get_return_types(self, root) -> list[ir.Type]:
+        [retval] = [
+            port.value
+            for port in root.body.ports
+            if port.name == internal_prefix("ret")
+        ]
+        [ti] = ase.search_parents(retval, lambda x: isinstance(x, sg.TypeInfo))
+        return [self.lower_type(ti.typename)]
 
     def lower(self, root: rg.Func, argtypes):
         """Expression Lowering
@@ -95,11 +92,7 @@ class Backend:
 
         with context, loc, module_body:
             # Constuct a function that emits a callable C-interface.
-            if function_name == "main":
-                # HACK
-                fnty = func.FunctionType.get([], [self.i32])
-            else:
-                fnty = func.FunctionType.get([], [])
+            fnty = func.FunctionType.get([], output_types)
             fun = func.FuncOp(function_name, fnty)
             fun.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
@@ -367,53 +360,6 @@ class Backend:
                     resty, struct_value, ir.DenseI64ArrayAttr.get([pos])
                 )
 
-            # case NbOp_Gt_Int64(lhs, rhs):
-            #     lhs = yield lhs
-            #     rhs = yield rhs
-            #     return arith.cmpi(4, lhs, rhs)
-
-            # case NbOp_Add_Int64(lhs, rhs):
-            #     lhs = yield lhs
-            #     rhs = yield rhs
-            #     return arith.addi(lhs, rhs)
-
-            # case NbOp_Sub_Int64(lhs, rhs):
-            #     lhs = yield lhs
-            #     rhs = yield rhs
-            #     return arith.subi(lhs, rhs)
-
-            # case NbOp_Add_Float64(lhs, rhs):
-            #     lhs = yield lhs
-            #     rhs = yield rhs
-            #     return arith.addf(lhs, rhs)
-            # case NbOp_Sub_Float64(lhs, rhs):
-            #     lhs = yield lhs
-            #     rhs = yield rhs
-            #     return arith.subf(lhs, rhs)
-            # case NbOp_Lt_Int64(lhs, rhs):
-            #     lhs = yield lhs
-            #     rhs = yield rhs
-            #     return arith.cmpi(2, lhs, rhs)
-            # case NbOp_Sub_Int64(lhs, rhs):
-            #     lhs = yield lhs
-            #     rhs = yield rhs
-            #     return arith.subi(lhs, rhs)
-
-            # case NbOp_CastI64ToF64(operand):
-            #     val = yield operand
-            #     return arith.sitofp(self.f64, val)
-            # case NbOp_Div_Int64(lhs, rhs):
-            #     lhs = yield lhs
-            #     rhs = yield rhs
-
-            #     return arith.divf(
-            #         arith.sitofp(self.f64, lhs), arith.sitofp(self.f64, rhs)
-            #     )
-            # ##### more
-            # case NbOp_Not_Int64(operand):
-            #     # Implement unary not
-            #     opval = yield operand
-            #     return arith.cmpi(0, opval, arith.constant(self.i64, 0))
             case rg.PyBool(val):
                 return arith.constant(self.boolean, val)
 

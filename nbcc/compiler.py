@@ -5,7 +5,7 @@ import tempfile
 from contextlib import ExitStack
 
 import sealir.rvsdg.grammar as rg
-from egglog import EGraph
+from egglog import EGraph, Vec
 from mlir import ir
 from sealir.eqsat.rvsdg_convert import egraph_conversion
 from sealir.eqsat.rvsdg_eqsat import GraphRoot
@@ -13,7 +13,7 @@ from sealir.eqsat.rvsdg_extract import egraph_extraction
 from sealir.rvsdg import format_rvsdg
 
 from nbcc.egraph.conversion import ExtendEGraphToRVSDG
-from nbcc.egraph.rules import egraph_optimize
+from nbcc.egraph.rules import egraph_optimize, egraph_convert_metadata
 from nbcc.frontend import TranslationUnit, frontend
 from nbcc.mlir_backend.backend import Backend
 
@@ -72,41 +72,29 @@ def make_binary(module: ir.Module, out_path: str):
         )
 
 
-# def extra_egraph(expr):
-#     import nbcc.egraph.grammar as sg
-#     from nbcc.egraph.rules import VarAnn
-
-#     match expr:
-#         case sg.VarAnnotation(typename=typename, symbol=symbol, value=expr):
-#             expr = yield expr
-#             return VarAnn(typename, symbol, expr)
-#         case _:
-#             raise NotImplementedError
-
-
 def middle_end(tu: TranslationUnit, fname: str):
-    fqn, func_region = tu.get_function(fname)
-    print(fqn, func_region)
 
-    # memo = egraph_conversion(func_region, extra_handle=extra_egraph)
-    memo = egraph_conversion(func_region)
+    fi = tu.get_function(fname)
+    print(fi.fqn, fi.region)
 
-    root = GraphRoot(memo[func_region])
+    memo = egraph_conversion(fi.region)
+
+    root = GraphRoot(memo[fi.region])
+
     egraph = EGraph()
     egraph.let("root", root)
-    # egraph.display()
+    egraph.let("mds", egraph_convert_metadata(fi.metadata, memo))
 
     expand_struct_type(tu, egraph)
 
     egraph_optimize(egraph)
+    # egraph.display()
 
     cost, extracted = egraph_extraction(
-        egraph, func_region, converter_class=ExtendEGraphToRVSDG
+        egraph, fi.region, converter_class=ExtendEGraphToRVSDG
     )
     print("egraph extracted")
     print("cost", cost)
-
-    print(extracted)
 
     [func] = [child for child in extracted._args if isinstance(child, rg.Func)]
     print(format_rvsdg(func))

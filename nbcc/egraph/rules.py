@@ -1,7 +1,15 @@
+from __future__ import annotations
+
+import warnings
+
 import egglog
-import sealir.eqsat.rvsdg_eqsat as rvsdg
 import sealir.eqsat.py_eqsat as py
+import sealir.eqsat.rvsdg_eqsat as rvsdg
+import sealir.rvsdg.grammar as rg
 from egglog import union
+from sealir.ase import SExpr
+
+from ..frontend import grammar as sg
 
 Term = rvsdg.Term
 TermList = rvsdg.TermList
@@ -19,6 +27,33 @@ def make_schedule() -> egglog.Schedule:
         | ruleset_simplify_builtin_print
         | ruleset_typing
     ).saturate()
+
+
+def egraph_convert_metadata(mdlist: list[SExpr], memo) -> egglog.Vec[Metadata]:
+    def gen(md):
+        match md:
+            case rg.DbgValue(name, value, srcloc, interloc):
+                warnings.warn("skip DbgValue")
+            case sg.TypeInfo(value=value, typename=str(typename)):
+                if value in memo:
+                    return Metadata.typeinfo(memo[value], typename)
+            case _:
+                raise NotImplementedError
+
+    return egglog.Vec[Metadata](
+        *filter(lambda x: x is not None, map(gen, mdlist))
+    )
+
+
+class Metadata(egglog.Expr):
+    @classmethod
+    def typeinfo(
+        cls, value: Term, typename: egglog.StringLike
+    ) -> Metadata: ...
+
+
+@egglog.function
+def Md_type_info(value: Term, typename: egglog.StringLike) -> Term: ...
 
 
 @egglog.function
@@ -55,12 +90,6 @@ def Builtin_struct__make__(args: TermList) -> Term: ...
 
 @egglog.function
 def Builtin_struct__get_field__(struct: Term, pos: egglog.i64) -> Term: ...
-
-
-@egglog.function
-def VarAnn(
-    typename: egglog.StringLike, symbol: egglog.StringLike, value: Term
-) -> Term: ...
 
 
 @egglog.ruleset
@@ -185,7 +214,5 @@ def create_ruleset_struct__get_field__(w_obj, field_pos: int):
 
 @egglog.ruleset
 def ruleset_typing(x: Term):
-    yield egglog.rewrite(
-        # Shortcut remove VarAnnq
-        VarAnn(_w(egglog.String), _w(egglog.String), value=x)
-    ).to(x)
+    if False:
+        yield

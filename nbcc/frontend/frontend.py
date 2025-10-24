@@ -22,7 +22,7 @@ from sealir.rvsdg import grammar as rg
 from sealir.rvsdg import internal_prefix
 from spy.fqn import FQN
 from spy.interop import redshift
-from spy.vm.function import W_ASTFunc, W_BuiltinFunc
+from spy.vm.function import W_ASTFunc, W_BuiltinFunc, W_FuncType
 from spy.vm.struct import W_StructType
 from spy.location import Loc
 
@@ -31,8 +31,15 @@ from .restructure import SCFG, SpyBasicBlock, _SpyScfgRenderer, restructure
 from .spy_ast import Node, convert_to_node
 
 
+@dataclass(frozen=True)
+class FunctionInfo:
+    fqn: FQN
+    region: SCFG
+    metadata: list[ase.SExpr]
+
+
 class TranslationUnit:
-    _symtabs: dict[FQN, Node]
+    _symtabs: dict[str, FunctionInfo]
     _structs: dict[FQN, Any]
     _builtins: dict[FQN, Any]
 
@@ -41,8 +48,8 @@ class TranslationUnit:
         self._structs = {}
         self._builtins = {}
 
-    def add(self, fqn: FQN, region: SCFG) -> None:
-        self._symtabs[fqn] = region
+    def add_function(self, fi: FunctionInfo) -> None:
+        self._symtabs[fi.fqn.symbol_name] = fi
 
     def add_struct_type(self, fqn: FQN, obj) -> None:
         self._structs[fqn] = obj
@@ -50,11 +57,8 @@ class TranslationUnit:
     def add_builtin(self, fqn: FQN, obj) -> None:
         self._builtins[fqn] = obj
 
-    def get_function(self, name: str) -> tuple[FQN, Node]:
-        for fqn in self._symtabs:
-            if fqn.symbol_name == name:
-                return fqn, self._symtabs[fqn]
-        raise NameError(name)
+    def get_function(self, name: str) -> FunctionInfo:
+        return self._symtabs[name]
 
     def __repr__(self):
         cname = self.__class__.__name__
@@ -68,6 +72,7 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
     tu = TranslationUnit()
 
     symtab: dict[FQN, Node] = {}
+    fn_type: dict[FQN, W_FuncType] = {}
 
     fqn_to_local_type = {}
     for fqn, w_obj in vm.fqns_by_modname(w_mod.name):
@@ -79,6 +84,7 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
                 node = convert_to_node(w_obj.funcdef, vm=vm)
                 pprint(node)
                 symtab[fqn] = node
+                fn_type[fqn] = w_obj.w_functype
                 fqn_to_local_type[fqn] = w_obj.locals_types_w
                 print()
         elif isinstance(w_obj, W_BuiltinFunc):
@@ -94,21 +100,31 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
         scfg = restructure(fqn.fullname, func_node)
         if view:
             _SpyScfgRenderer(scfg).view()
-        region = convert_to_sexpr(func_node, scfg, fqn_to_local_type[fqn])
+        region, mds = convert_to_sexpr(
+            func_node, scfg, fn_type[fqn], fqn_to_local_type[fqn]
+        )
         print(format_rvsdg(region))
-        tu.add(fqn, region)
+        tu.add_function(FunctionInfo(fqn=fqn, region=region, metadata=mds))
 
     return tu
 
 
-def convert_to_sexpr(func_node: Node, scfg: SCFG, local_types: dict[str, Any]):
+def convert_to_sexpr(
+    func_node: Node,
+    scfg: SCFG,
+    fn_type: W_FuncType,
+    local_types: dict[str, Any],
+) -> tuple[SCFG, list]:
     with ase.Tape() as tape:
         cts = ConvertToSExpr(tape, local_types)
         with cts.setup_function(func_node) as rb:
             cts.handle_region(scfg)
 
-        region = cts.close_function(rb, func_node)
-        return region
+        region = cts.close_function(rb, func_node, fn_type)
+        for md in cts._metadata:
+            print(ase.as_tuple(md, depth=1))
+
+        return region, cts._metadata
 
 
 @dataclass(frozen=True)
@@ -134,15 +150,6 @@ class ConversionContext:
     @property
     def scope(self) -> Scope:
         return self.scope_stack[-1]
-
-    # HACK
-    # def mark_local_type(self, target: str, expr: ase.SExpr) -> ase.SExpr:
-    #     ty = self.local_types[target]
-    #     return self.grm.write(
-    #         sg.VarAnnotation(
-    #             typename=ty.fqn.fullname, symbol=target, value=expr
-    #         )
-    #     )
 
     def store_local(self, target: str, expr: ase.SExpr) -> None:
         self.scope.local_vars[target] = expr
@@ -231,6 +238,8 @@ class ConvertToSExpr:
         self._context = ConversionContext(
             grm=sg.Grammar(self._tape), local_types=local_types
         )
+        self._metadata = []
+        self._local_types = local_types
 
     @contextmanager
     def setup_function(self, func_node: Node):
@@ -246,7 +255,9 @@ class ConvertToSExpr:
         with ctx.new_region([internal_prefix("io")]) as rb:
             yield rb
 
-    def close_function(self, rb: rg.RegionBegin, func_node: Node) -> rg.Func:
+    def close_function(
+        self, rb: rg.RegionBegin, func_node: Node, fn_type: W_FuncType
+    ) -> rg.Func:
         ctx = self._context
         vars = {internal_prefix("io"), internal_prefix("ret")}
 
@@ -261,6 +272,14 @@ class ConvertToSExpr:
 
         scope_map.local_vars[internal_prefix("ret")] = retval
         vars.add(internal_prefix("ret"))
+
+        assert not fn_type.params  # TODO
+
+        retval = scope_map.local_vars[internal_prefix("ret")]
+        ret_tyname = fn_type.w_restype.fqn.fullname
+        self._metadata.append(
+            ctx.grm.write(sg.TypeInfo(value=retval, typename=ret_tyname))
+        )
 
         return ctx.grm.write(
             rg.Func(fname=name, args=args, body=ctx.close_region(rb, vars))
@@ -427,9 +446,21 @@ class ConvertToSExpr:
                 value=rval,
             ):
                 expr = self.emit_expression(rval)
-                # HACK
-                # expr = ctx.mark_local_type(target, expr)
                 ctx.store_local(target, expr)
+                # Debug info
+                loc = self.emit_loc(stmt.loc.value)
+                unloc = grm.write(rg.unknown_loc())
+                md = grm.write(
+                    rg.DbgValue(
+                        name=target, value=expr, srcloc=loc, interloc=unloc
+                    )
+                )
+                self._metadata.append(md)
+
+                if ty := self._local_types.get(target):
+                    ti = sg.TypeInfo(value=expr, typename=ty.fqn.fullname)
+                    self._metadata.append(grm.write(ti))
+
                 return expr
 
             case Node("StmtExpr", value=Node() as value):
@@ -481,3 +512,14 @@ class ConvertToSExpr:
                 return grm.write(rg.PyStr(text))
             case _:
                 raise NotImplementedError(node)
+
+    def emit_loc(self, loc_node: Loc) -> rg.Loc:
+        return self._context.grm.write(
+            rg.Loc(
+                filename=loc_node.filename,
+                line_first=loc_node.line_start,
+                line_last=loc_node.line_end,
+                col_first=loc_node.col_start,
+                col_last=loc_node.col_end,
+            )
+        )

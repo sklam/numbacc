@@ -13,10 +13,9 @@ class BuiltinOp(_Root):
     args: tuple[SExpr]
 
 
-# class VarAnnotation(_Root):
-#     typename: str
-#     symbol: str  # for debug
-#     value: SExpr
+class TypeInfo(_Root):
+    value: SExpr
+    typename: str
 
 
 class Grammar(_Grammar):

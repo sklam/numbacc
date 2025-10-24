@@ -1,4 +1,5 @@
 from sealir.eqsat.rvsdg_extract_details import EGraphToRVSDG as _EGraphToRVSDG
+
 from ..frontend import grammar as sg
 
 
@@ -46,3 +47,14 @@ class ExtendEGraphToRVSDG(_EGraphToRVSDG):
             case _:
                 # Use parent's implementation for other terms.
                 return super().handle_Term(op, children, grm)
+
+    def handle_Metadata(
+        self, key: str, op: str, children: dict | list, grm: sg.Grammar
+    ):
+        match op, children:
+            case "Metadata.typeinfo", {
+                "value": value,
+                "typename": str(typename),
+            }:
+                return grm.write(sg.TypeInfo(value=value, typename=typename))
+        raise NotImplementedError(key, op, children)
