@@ -29,3 +29,11 @@ Testing
 ```
 pytest ./nbcc
 ```
+
+
+
+## E2E compiler demo
+
+```
+python -m nbcc.compile <source> <dest-binary>
+```
