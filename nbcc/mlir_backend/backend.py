@@ -97,7 +97,11 @@ class Backend:
 
         with context, loc, module_body:
             # Constuct a function that emits a callable C-interface.
-            fnty = func.FunctionType.get([], [])
+            if function_name == "main":
+                # HACK
+                fnty = func.FunctionType.get([], [self.i32])
+            else:
+                fnty = func.FunctionType.get([], [])
             fun = func.FuncOp(function_name, fnty)
             fun.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
@@ -144,7 +148,6 @@ class Backend:
         # Function construction when all the constants have been initialized.
         with context, loc, constant_entry:
             cf.br([], fun.body.blocks[1])
-
         return module
 
     def run_passes(self, module):
@@ -209,7 +212,11 @@ class Backend:
                     retidx = portnames.index(internal_prefix("ret"))
                 except ValueError as e:
                     assert "!ret" in str(e)
-                    func.ReturnOp([])
+                    if expr.fname == "main":
+                        # HACK
+                        func.ReturnOp([arith.constant(self.i32, 0)])
+                    else:
+                        func.ReturnOp([])
                 else:
                     retval = outs[retidx]
                     func.ReturnOp([self._cast_return_value(retval)])

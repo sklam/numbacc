@@ -1,34 +1,33 @@
-from typing import Sequence, Any
-from contextlib import contextmanager
-from pprint import pprint
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pprint import pprint
+from typing import Any, Sequence
 
+from numba_scfg.core.datastructures.basic_block import (
+    BasicBlock,
+    RegionBlock,
+    SyntheticAssignment,
+    SyntheticExitBranch,
+    SyntheticExitingLatch,
+    SyntheticFill,
+    SyntheticHead,
+    SyntheticReturn,
+    SyntheticTail,
+)
+from numba_scfg.core.datastructures.scfg import SCFG
+from sealir import ase
+from sealir.rvsdg import format_rvsdg
+from sealir.rvsdg import grammar as rg
+from sealir.rvsdg import internal_prefix
 from spy.fqn import FQN
 from spy.interop import redshift
 from spy.vm.function import W_ASTFunc, W_BuiltinFunc
 from spy.vm.struct import W_StructType
 
-from numba_scfg.core.datastructures.basic_block import (
-    RegionBlock,
-    BasicBlock,
-    SyntheticAssignment,
-    SyntheticTail,
-    SyntheticHead,
-    SyntheticFill,
-    SyntheticReturn,
-    SyntheticExitingLatch,
-    SyntheticExitBranch,
-)
-from numba_scfg.core.datastructures.scfg import SCFG
-from .restructure import restructure, _SpyScfgRenderer, SCFG, SpyBasicBlock
-from .spy_ast import Node, convert_to_node
-
-from sealir import ase
-from sealir.rvsdg import grammar as rg
-from sealir.rvsdg import internal_prefix, format_rvsdg
-
 from ..egraph import grammar as sg
+from .restructure import SCFG, SpyBasicBlock, _SpyScfgRenderer, restructure
+from .spy_ast import Node, convert_to_node
 
 
 class TranslationUnit:
@@ -135,13 +134,14 @@ class ConversionContext:
     def scope(self) -> Scope:
         return self.scope_stack[-1]
 
-    def mark_local_type(self, target: str, expr: ase.SExpr) -> ase.SExpr:
-        ty = self.local_types[target]
-        return self.grm.write(
-            sg.VarAnnotation(
-                typename=ty.fqn.fullname, symbol=target, value=expr
-            )
-        )
+    # HACK
+    # def mark_local_type(self, target: str, expr: ase.SExpr) -> ase.SExpr:
+    #     ty = self.local_types[target]
+    #     return self.grm.write(
+    #         sg.VarAnnotation(
+    #             typename=ty.fqn.fullname, symbol=target, value=expr
+    #         )
+    #     )
 
     def store_local(self, target: str, expr: ase.SExpr) -> None:
         self.scope.local_vars[target] = expr
@@ -416,7 +416,8 @@ class ConvertToSExpr:
                 value=rval,
             ):
                 expr = self.emit_expression(rval)
-                expr = ctx.mark_local_type(target, expr)
+                # HACK
+                # expr = ctx.mark_local_type(target, expr)
                 ctx.store_local(target, expr)
                 return expr
 
