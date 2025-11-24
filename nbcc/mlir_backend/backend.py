@@ -51,6 +51,7 @@ class Backend:
             self.boolean = ir.IntegerType.get_signless(1, context=context)
             self.io_type = ir.IntegerType.get_signless(1, context=context)
             self.llvm_ptr = ir.Type.parse("!llvm.ptr")
+            self.none_type = ir.Type.parse("!llvm.struct<()>")
 
     def lower_type(self, ty: str) -> ir.Type:
         """Type Lowering
@@ -60,6 +61,8 @@ class Backend:
         match ty:
             case "builtins::i32":
                 return self.i32
+            case "types::NoneType":
+                return self.none_type
         raise NotImplementedError(f"unknown type: {ty}")
 
     def get_return_types(self, root) -> list[ir.Type]:
@@ -458,6 +461,9 @@ class Backend:
                 # HACK
                 return arith.constant(self.i32, 0)
 
+            case sg.CallDirect(fqn=callee_fqn, io=io_val, args=args_vals):
+                breakpoint()
+                raise NotImplementedError(expr)
             case _:
                 raise NotImplementedError(
                     expr, type(expr), ase.as_tuple(expr, depth=3)

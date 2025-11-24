@@ -44,6 +44,10 @@ class ExtendEGraphToRVSDG(_EGraphToRVSDG):
                 return grm.write(
                     sg.BuiltinOp(opname="struct_get", args=(struct, pos))
                 )
+            case "Call_direct", {"fqn": str(fqn), "io": io, "args": args}:
+                return grm.write(
+                    sg.CallDirect(fqn=fqn, io=io, args=args)
+                )
             case _:
                 # Use parent's implementation for other terms.
                 return super().handle_Term(op, children, grm)

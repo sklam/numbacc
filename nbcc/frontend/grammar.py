@@ -18,5 +18,11 @@ class TypeInfo(_Root):
     typename: str
 
 
+class CallDirect(_Root):
+    fqn: str
+    io: SExpr
+    args: tuple[SExpr]
+
+
 class Grammar(_Grammar):
     start = rg.Grammar.start | _Root

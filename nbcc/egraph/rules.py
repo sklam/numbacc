@@ -26,6 +26,7 @@ def make_schedule() -> egglog.Schedule:
         ruleset_simplify_builtin_arith
         | ruleset_simplify_builtin_print
         | ruleset_typing
+        | ruleset_call_direct
     ).saturate()
 
 
@@ -90,6 +91,10 @@ def Builtin_struct__make__(args: TermList) -> Term: ...
 
 @egglog.function
 def Builtin_struct__get_field__(struct: Term, pos: egglog.i64) -> Term: ...
+
+
+@egglog.function
+def Call_direct(fqn: egglog.StringLike, io: Term, args: TermList) -> Term: ...
 
 
 @egglog.ruleset
@@ -216,3 +221,21 @@ def create_ruleset_struct__get_field__(w_obj, field_pos: int):
 def ruleset_typing(x: Term):
     if False:
         yield
+
+
+@egglog.ruleset
+def ruleset_call_direct(
+    io: Term,
+    args: TermList,
+    call: Term,
+    fqn: egglog.String,
+):
+    yield egglog.rule(
+        call == py.Py_Call(
+            io=io,
+            func=py.Py_LoadGlobal(io=_w(Term), name=fqn),
+            args=args,
+        ),
+    ).then(
+        union(call).with_(Call_direct(fqn=fqn, io=io, args=args)),
+    )

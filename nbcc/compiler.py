@@ -1,5 +1,6 @@
 import logging
 import subprocess as subp
+from pprint import pprint
 import sys
 import tempfile
 from contextlib import ExitStack
@@ -23,7 +24,9 @@ logging.disable(logging.INFO)
 def compile(path: str, out_path: str) -> None:
     tu = frontend(path)
 
-    rvsdg_ir = middle_end(tu, "main")
+    ir_map = middle_end(tu)
+
+    pprint(ir_map)
     be = Backend()
     module = be.lower(rvsdg_ir, ())
     print(module)
@@ -72,33 +75,37 @@ def make_binary(module: ir.Module, out_path: str):
         )
 
 
-def middle_end(tu: TranslationUnit, fname: str):
+def middle_end(tu: TranslationUnit) -> dict[str, object]:
+    out: dict[str, object] = {}
+    for fname in tu.list_functions():
 
-    fi = tu.get_function(fname)
-    print(fi.fqn, fi.region)
+        fi = tu.get_function(fname)
+        print(fi.fqn, fi.region)
 
-    memo = egraph_conversion(fi.region)
+        memo = egraph_conversion(fi.region)
 
-    root = GraphRoot(memo[fi.region])
+        root = GraphRoot(memo[fi.region])
 
-    egraph = EGraph()
-    egraph.let("root", root)
-    egraph.let("mds", egraph_convert_metadata(fi.metadata, memo))
+        egraph = EGraph()
+        egraph.let("root", root)
+        egraph.let("mds", egraph_convert_metadata(fi.metadata, memo))
 
-    expand_struct_type(tu, egraph)
+        expand_struct_type(tu, egraph)
 
-    egraph_optimize(egraph)
-    # egraph.display()
+        egraph_optimize(egraph)
+        # egraph.display()
 
-    cost, extracted = egraph_extraction(
-        egraph, fi.region, converter_class=ExtendEGraphToRVSDG
-    )
-    print("egraph extracted")
-    print("cost", cost)
+        cost, extracted = egraph_extraction(
+            egraph, fi.region, converter_class=ExtendEGraphToRVSDG
+        )
+        print("egraph extracted")
+        print("cost", cost)
 
-    [func] = [child for child in extracted._args if isinstance(child, rg.Func)]
-    print(format_rvsdg(func))
-    return func
+        [func] = [child for child in extracted._args if isinstance(child, rg.Func)]
+        print(format_rvsdg(func))
+
+        out[fname] = func
+    return out
 
 
 def expand_struct_type(tu: TranslationUnit, egraph):

@@ -1,3 +1,4 @@
+import warnings
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ from spy.fqn import FQN
 from spy.interop import redshift
 from spy.vm.function import W_ASTFunc, W_BuiltinFunc, W_FuncType
 from spy.vm.struct import W_StructType
+from spy.vm.modules.types import W_LiftedObject, W_LiftedType
 from spy.location import Loc
 
 from . import grammar as sg
@@ -39,7 +41,7 @@ class FunctionInfo:
 
 
 class TranslationUnit:
-    _symtabs: dict[str, FunctionInfo]
+    _symtabs: dict[FQN, FunctionInfo]
     _structs: dict[FQN, Any]
     _builtins: dict[FQN, Any]
 
@@ -49,7 +51,7 @@ class TranslationUnit:
         self._builtins = {}
 
     def add_function(self, fi: FunctionInfo) -> None:
-        self._symtabs[fi.fqn.symbol_name] = fi
+        self._symtabs[fi.fqn] = fi
 
     def add_struct_type(self, fqn: FQN, obj) -> None:
         self._structs[fqn] = obj
@@ -57,8 +59,11 @@ class TranslationUnit:
     def add_builtin(self, fqn: FQN, obj) -> None:
         self._builtins[fqn] = obj
 
-    def get_function(self, name: str) -> FunctionInfo:
-        return self._symtabs[name]
+    def get_function(self, fqn: FQN) -> FunctionInfo:
+        return self._symtabs[fqn]
+
+    def list_functions(self) -> list[FQN]:
+        return list(self._symtabs)
 
     def __repr__(self):
         cname = self.__class__.__name__
@@ -76,7 +81,8 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
 
     fqn_to_local_type = {}
     for fqn, w_obj in vm.fqns_by_modname(w_mod.name):
-        print(fqn, w_obj)
+        print('?' * 80)
+        print(fqn, '|', w_obj)
         if isinstance(w_obj, W_ASTFunc):
             print("functype:", w_obj.w_functype)
             if w_obj.locals_types_w is not None:
@@ -91,17 +97,27 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
             tu.add_builtin(fqn, w_obj)
         elif isinstance(w_obj, W_StructType):
             tu.add_struct_type(fqn, w_obj)
+        # elif isinstance(w_obj, W_LiftedObject):
+        #     print("---- W_LiftedObject")
+        #     print(w_obj)
+        #     # tu.add_struct_type(fqn, w_obj)
+        elif isinstance(w_obj, W_LiftedType):
+            # tu.add_struct_type(fqn, w_obj)
+            print("---- W_LiftedType")
+            print(w_obj)
         else:
             breakpoint()
 
     # restructure
     for fqn, func_node in symtab.items():
+        print('/' * 80)
+        print("///TRANSLATE", fqn)
 
         scfg = restructure(fqn.fullname, func_node)
         if view:
             _SpyScfgRenderer(scfg).view()
         region, mds = convert_to_sexpr(
-            func_node, scfg, fn_type[fqn], fqn_to_local_type[fqn]
+            func_node, scfg, fn_type[fqn], fqn_to_local_type[fqn], fqn_to_local_type,
         )
         print(format_rvsdg(region))
         tu.add_function(FunctionInfo(fqn=fqn, region=region, metadata=mds))
@@ -114,9 +130,10 @@ def convert_to_sexpr(
     scfg: SCFG,
     fn_type: W_FuncType,
     local_types: dict[str, Any],
+    global_ns: dict[str, Any],
 ) -> tuple[SCFG, list]:
     with ase.Tape() as tape:
-        cts = ConvertToSExpr(tape, local_types)
+        cts = ConvertToSExpr(tape, local_types, global_ns)
         with cts.setup_function(func_node) as rb:
             cts.handle_region(scfg)
 
@@ -137,6 +154,7 @@ class Scope:
 class ConversionContext:
     grm: sg.Grammar
     local_types: dict[str, Any]
+    global_ns: dict[FQN, Any]
     scope_stack: list = field(init=False, default_factory=list)
     scope_map: dict[rg.RegionBegin, Scope] = field(
         init=False, default_factory=dict
@@ -152,15 +170,19 @@ class ConversionContext:
         return self.scope_stack[-1]
 
     def store_local(self, target: str, expr: ase.SExpr) -> None:
+        assert isinstance(expr, ase.SExpr)
         self.scope.local_vars[target] = expr
 
     def load_local(self, target: str) -> ase.SExpr:
         return self.scope.local_vars[target]
 
     def get_io(self) -> ase.SExpr:
-        return self.load_local(internal_prefix("io"))
+        out = self.load_local(internal_prefix("io"))
+        assert isinstance(out, ase.SExpr)
+        return out
 
     def set_io(self, value: ase.SExpr) -> None:
+        assert isinstance(value, ase.SExpr)
         self.store_local(internal_prefix("io"), value)
 
     def insert_io_node(self, node: ase.SExpr) -> ase.SExpr:
@@ -233,26 +255,35 @@ class ConversionContext:
 
 
 class ConvertToSExpr:
-    def __init__(self, tape: ase.Tape, local_types: dict[str, Any]):
+    def __init__(self, tape: ase.Tape, local_types: dict[str, Any], global_ns: dict[str, Any]):
         self._tape = tape
         self._context = ConversionContext(
-            grm=sg.Grammar(self._tape), local_types=local_types
+            grm=sg.Grammar(self._tape), local_types=local_types, global_ns=global_ns
         )
         self._metadata = []
         self._local_types = local_types
+        self._global_ns = global_ns
+        self._args = []
 
     @contextmanager
     def setup_function(self, func_node: Node):
+        argmap = {}
         match func_node:
             case Node("FuncDef", args=args):
-                if args:
-                    raise NotImplementedError("arguments handling")
+                grm = self._context.grm
+                for i, arg in enumerate(args):
+                    # The names must be defined in local_types
+                    assert arg.name in self._local_types
+                    arg_sexpr = grm.write(rg.ArgRef(idx=i, name=arg.name))
+                    self._args.append(arg_sexpr)
+                    argmap[arg.name] = arg_sexpr
             case _:
                 raise ValueError(func_node)
 
         ctx = self._context
-
         with ctx.new_region([internal_prefix("io")]) as rb:
+            for k, v in argmap.items():
+                self._context.store_local(k, v)
             yield rb
 
     def close_function(
@@ -262,7 +293,8 @@ class ConvertToSExpr:
         vars = {internal_prefix("io"), internal_prefix("ret")}
 
         name = func_node.name
-        assert not func_node.args
+        if not func_node.args:
+            warnings.warn("ARGS not handled")
         args = ctx.grm.write(rg.Args(()))
 
         # redirect return value
@@ -273,7 +305,9 @@ class ConvertToSExpr:
         scope_map.local_vars[internal_prefix("ret")] = retval
         vars.add(internal_prefix("ret"))
 
-        assert not fn_type.params  # TODO
+        for arg_sexpr, param in zip(self._args, fn_type.params, strict=True):
+            fqn = param.w_T.fqn
+            ctx.grm.write(sg.TypeInfo(value=arg_sexpr, typename=fqn.fullname))
 
         retval = scope_map.local_vars[internal_prefix("ret")]
         ret_tyname = fn_type.w_restype.fqn.fullname
