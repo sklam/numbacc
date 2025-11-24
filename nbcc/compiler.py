@@ -90,13 +90,17 @@ def middle_end(tu: TranslationUnit, fname: str):
     egraph_optimize(egraph)
     # egraph.display()
 
-    cost, extracted = egraph_extraction(
-        egraph, fi.region, converter_class=ExtendEGraphToRVSDG
-    )
-    print("egraph extracted")
-    print("cost", cost)
 
-    [func] = [child for child in extracted._args if isinstance(child, rg.Func)]
+    extraction = egraph_extraction(egraph)
+    extraction.compute()
+    extresult = extraction.extract_common_root()
+    print("egraph extracted")
+    print("cost", extresult.cost)
+
+    root = extresult.convert(fi.region, ExtendEGraphToRVSDG)
+    print(root._tape.dump())
+
+    [func] = [node for node in root._args if isinstance(node, rg.Func)]
     print(format_rvsdg(func))
     return func
 
