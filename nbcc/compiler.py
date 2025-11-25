@@ -1,4 +1,5 @@
 import logging
+import warnings
 import subprocess as subp
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from sealir.eqsat.rvsdg_convert import egraph_conversion
 from sealir.eqsat.rvsdg_eqsat import GraphRoot
 from sealir.eqsat.rvsdg_extract import egraph_extraction
 from sealir.rvsdg import format_rvsdg
+from sealir.ase import SExpr
 
 from nbcc.egraph.conversion import ExtendEGraphToRVSDG
 from nbcc.egraph.rules import egraph_optimize, egraph_convert_metadata
@@ -23,9 +25,11 @@ logging.disable(logging.INFO)
 def compile(path: str, out_path: str) -> None:
     tu = frontend(path)
 
-    rvsdg_ir = middle_end(tu, "main")
+    func_map, mdlist = middle_end(tu, "main")
+    [rvsdg_ir] = func_map.values()
     be = Backend()
-    module = be.lower(rvsdg_ir, ())
+    warnings.warn("Not handling lowering argtypes")
+    module = be.lower(rvsdg_ir, (), mdlist=mdlist)
     print(module)
     module.operation.verify()
 
@@ -72,7 +76,9 @@ def make_binary(module: ir.Module, out_path: str):
         )
 
 
-def middle_end(tu: TranslationUnit, fname: str):
+def middle_end(
+    tu: TranslationUnit, fname: str
+) -> tuple[dict[str, SExpr], list[SExpr]]:
 
     fi = tu.get_function(fname)
     print(fi.fqn, fi.region)
@@ -90,7 +96,6 @@ def middle_end(tu: TranslationUnit, fname: str):
     egraph_optimize(egraph)
     # egraph.display()
 
-
     extraction = egraph_extraction(egraph)
     extraction.compute()
     extresult = extraction.extract_common_root()
@@ -100,9 +105,17 @@ def middle_end(tu: TranslationUnit, fname: str):
     root = extresult.convert(fi.region, ExtendEGraphToRVSDG)
     print(root._tape.dump())
 
-    [func] = [node for node in root._args if isinstance(node, rg.Func)]
-    print(format_rvsdg(func))
-    return func
+    func_nodes = {}
+    mdlist = []
+    for node in root._args:
+        match node:
+            case rg.Func(fname=str(fname)):
+                func_nodes[fname] = node
+            case _:
+                mdlist.append(node)
+    for func in func_nodes.values():
+        print(format_rvsdg(func))
+    return func_nodes, mdlist
 
 
 def expand_struct_type(tu: TranslationUnit, egraph):
