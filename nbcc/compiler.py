@@ -1,4 +1,5 @@
 import logging
+import warnings
 import subprocess as subp
 from pprint import pprint
 import sys
@@ -12,6 +13,7 @@ from sealir.eqsat.rvsdg_convert import egraph_conversion
 from sealir.eqsat.rvsdg_eqsat import GraphRoot
 from sealir.eqsat.rvsdg_extract import egraph_extraction
 from sealir.rvsdg import format_rvsdg
+from sealir.ase import SExpr
 
 from nbcc.egraph.conversion import ExtendEGraphToRVSDG
 from nbcc.egraph.rules import egraph_optimize, egraph_convert_metadata
@@ -24,11 +26,12 @@ logging.disable(logging.INFO)
 def compile(path: str, out_path: str) -> None:
     tu = frontend(path)
 
-    ir_map = middle_end(tu)
-
-    pprint(ir_map)
+    func_map, mdlist = middle_end(tu, "main")
+    pprint(func_map)
+    [rvsdg_ir] = func_map.values()
     be = Backend()
-    module = be.lower(rvsdg_ir, ())
+    warnings.warn("Not handling lowering argtypes")
+    module = be.lower(rvsdg_ir, (), mdlist=mdlist)
     print(module)
     module.operation.verify()
 
@@ -75,11 +78,14 @@ def make_binary(module: ir.Module, out_path: str):
         )
 
 
-def middle_end(tu: TranslationUnit) -> dict[str, object]:
-    out: dict[str, object] = {}
-    for fname in tu.list_functions():
+def middle_end(
+    tu: TranslationUnit, fname: str
+) -> tuple[dict[str, SExpr], list[SExpr]]:
+    func_nodes = {}
+    mdlist = []
 
-        fi = tu.get_function(fname)
+    for fqn in tu.list_functions():
+        fi = tu.get_function(fqn)
         print(fi.fqn, fi.region)
 
         memo = egraph_conversion(fi.region)
@@ -95,17 +101,25 @@ def middle_end(tu: TranslationUnit) -> dict[str, object]:
         egraph_optimize(egraph)
         # egraph.display()
 
-        cost, extracted = egraph_extraction(
-            egraph, fi.region, converter_class=ExtendEGraphToRVSDG
-        )
+        extraction = egraph_extraction(egraph)
+        extraction.compute()
+        extresult = extraction.extract_common_root()
         print("egraph extracted")
-        print("cost", cost)
+        print("cost", extresult.cost)
 
-        [func] = [child for child in extracted._args if isinstance(child, rg.Func)]
+        root = extresult.convert(fi.region, ExtendEGraphToRVSDG)
+        print(root._tape.dump())
+
+        for node in root._args:
+            match node:
+                case rg.Func(fname=str(fname)):
+                    assert fname not in func_nodes
+                    func_nodes[fname] = node
+                case _:
+                    mdlist.append(node)
+    for func in func_nodes.values():
         print(format_rvsdg(func))
-
-        out[fname] = func
-    return out
+    return func_nodes, mdlist
 
 
 def expand_struct_type(tu: TranslationUnit, egraph):

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import warnings
+from collections import defaultdict
 import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Sequence
 
 import mlir.dialects.arith as arith
 import mlir.dialects.cf as cf
@@ -35,6 +37,24 @@ class LowerStates(ase.TraverseState):
     get_region_args: Callable
     function_block: func.FuncOp
     constant_block: ir.Block
+
+
+class MDMap:
+    mdmap: defaultdict[ase.SExpr, list[ase.SExpr]]
+
+    def __init__(self):
+        self.mdmap = defaultdict(list)
+
+    def load(self, mdlist):
+        for md in mdlist:
+            match md:
+                case sg.TypeInfo(value=value):
+                    self.mdmap[value].append(md)
+                case _:
+                    warnings.warn(f"Unknown MD: {md}")
+
+    def lookup_typeinfo(self, val: ase.SExpr) -> list[sg.TypeInfo]:
+        return [x for x in self.mdmap[val] if isinstance(x, sg.TypeInfo)]
 
 
 class Backend:
@@ -71,10 +91,10 @@ class Backend:
             for port in root.body.ports
             if port.name == internal_prefix("ret")
         ]
-        [ti] = ase.search_parents(retval, lambda x: isinstance(x, sg.TypeInfo))
+        [ti] = self.mdmap.lookup_typeinfo(retval)
         return [self.lower_type(ti.typename)]
 
-    def lower(self, root: rg.Func, argtypes):
+    def lower(self, root: rg.Func, argtypes, mdlist: Sequence[ase.SExpr]):
         """Expression Lowering
 
         Lower RVSDG expressions to MLIR operations, handling control flow
@@ -83,6 +103,8 @@ class Backend:
         context = self.context
         self.loc = loc = ir.Location.name(f"{self}.lower()", context=context)
         self.module = module = ir.Module.create(loc=loc)
+        self.mdmap = MDMap()
+        self.mdmap.load(mdlist)
 
         function_name = root.fname
 
@@ -174,6 +196,13 @@ class Backend:
 
     def _cast_return_value(self, val):
         return val
+
+    def get_ll_type(self, expr: ase.SExpr) -> sg.TypeInfo | None:
+        mds = self.mdmap.lookup_typeinfo(expr)
+        if not mds:
+            return None
+        [ty] = mds
+        return self.lower_type(ty.typename)
 
     def lower_expr(self, expr: SExpr, state: LowerStates):
         """Expression Lowering Implementation
@@ -379,50 +408,35 @@ class Backend:
 
                 result_tys: list[ir.Type] = []
 
-                # MLIR Workaround: We need to create detached blocks first to
-                # build the then/else bodies to know about the MLIR types.
-
-                with state.push(operand_vals):
-                    # Make a detached module to temporarily house the blocks
-                    fake = ir.Module.create()
-                    then_block = fake.body.create_after()
-                    with ir.InsertionPoint(then_block):
-                        value_body = yield body
-                        scf.YieldOp([x for x in value_body])
-                        result_tys.extend(x.type for x in value_body)
-
-                    else_block = then_block.create_after()
-                    with ir.InsertionPoint(else_block):
-                        value_else = yield orelse
-                        scf.YieldOp([x for x in value_else])
-                        for x, expected in zip(
-                            value_else, result_tys, strict=True
-                        ):
-                            assert x.type == expected
+                # determine result types
+                for left_port, right_port in zip(
+                    body.ports, orelse.ports, strict=True
+                ):
+                    left_ty = self.get_port_type(left_port)
+                    right_ty = self.get_port_type(right_port)
+                    if left_ty is None:
+                        ty = right_ty
+                    elif right_ty is None:
+                        ty = left_ty
+                    else:
+                        assert left_ty == right_ty, f"{left_ty} != {right_ty}"
+                        ty = left_ty
+                    result_tys.append(ty)
 
                 # Build the MLIR If-else
                 if_op = scf.IfOp(
                     cond=condval, results_=result_tys, hasElse=True
                 )
 
-                # Move operations from detached then_block
-                # to actual IfOp then_block
-                with ir.InsertionPoint(if_op.then_block):
-                    zero = arith.constant(self.i32, 0)
-                    insertpt = arith.OrIOp(zero, zero)
+                with state.push(operand_vals):
+                    # Make a detached module to temporarily house the blocks
+                    with ir.InsertionPoint(if_op.then_block):
+                        value_body = yield body
+                        scf.YieldOp([x for x in value_body])
 
-                    for op in list(then_block.operations):
-                        op.move_after(insertpt)
-                        insertpt = op
-
-                # Move operations from detached else_block
-                # to actual IfOp else_block
-                with ir.InsertionPoint(if_op.else_block):
-                    zero = arith.constant(self.i32, 0)
-                    insertpt = arith.OrIOp(zero, zero)
-                    for op in list(else_block.operations):
-                        op.move_after(insertpt)
-                        insertpt = op
+                    with ir.InsertionPoint(if_op.else_block):
+                        value_else = yield orelse
+                        scf.YieldOp([x for x in value_else])
 
                 return if_op.results
 
@@ -468,6 +482,13 @@ class Backend:
                 raise NotImplementedError(
                     expr, type(expr), ase.as_tuple(expr, depth=3)
                 )
+
+    def get_port_type(self, port) -> ir.Attribute:
+        if port.name == internal_prefix("io"):
+            ty = self.io_type
+        else:
+            ty = self.get_ll_type(port.value)
+        return ty
 
     # ## JIT Compilation
     #

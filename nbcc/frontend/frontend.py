@@ -81,8 +81,8 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
 
     fqn_to_local_type = {}
     for fqn, w_obj in vm.fqns_by_modname(w_mod.name):
-        print('?' * 80)
-        print(fqn, '|', w_obj)
+        print("?" * 80)
+        print(fqn, "|", w_obj)
         if isinstance(w_obj, W_ASTFunc):
             print("functype:", w_obj.w_functype)
             if w_obj.locals_types_w is not None:
@@ -110,14 +110,18 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
 
     # restructure
     for fqn, func_node in symtab.items():
-        print('/' * 80)
+        print("/" * 80)
         print("///TRANSLATE", fqn)
 
         scfg = restructure(fqn.fullname, func_node)
         if view:
             _SpyScfgRenderer(scfg).view()
         region, mds = convert_to_sexpr(
-            func_node, scfg, fn_type[fqn], fqn_to_local_type[fqn], fqn_to_local_type,
+            func_node,
+            scfg,
+            fn_type[fqn],
+            fqn_to_local_type[fqn],
+            fqn_to_local_type,
         )
         print(format_rvsdg(region))
         tu.add_function(FunctionInfo(fqn=fqn, region=region, metadata=mds))
@@ -185,14 +189,14 @@ class ConversionContext:
         assert isinstance(value, ase.SExpr)
         self.store_local(internal_prefix("io"), value)
 
-    def insert_io_node(self, node: ase.SExpr) -> ase.SExpr:
+    def insert_io_node(self, node: rg.grammar.Rule) -> ase.SExpr:
         grm = self.grm
         written = grm.write(node)
         io, res = (grm.write(rg.Unpack(val=written, idx=i)) for i in range(2))
         self.set_io(io)
         return res
 
-    def update_scope(self, expr: ase.SExpr, vars: Sequence[str]):
+    def update_scope(self, expr: ase.SExpr, vars: Sequence[str]) -> None:
         grm = self.grm
 
         for i, k in enumerate(vars):
@@ -255,10 +259,17 @@ class ConversionContext:
 
 
 class ConvertToSExpr:
-    def __init__(self, tape: ase.Tape, local_types: dict[str, Any], global_ns: dict[str, Any]):
+    def __init__(
+        self,
+        tape: ase.Tape,
+        local_types: dict[str, Any],
+        global_ns: dict[str, Any],
+    ):
         self._tape = tape
         self._context = ConversionContext(
-            grm=sg.Grammar(self._tape), local_types=local_types, global_ns=global_ns
+            grm=sg.Grammar(self._tape),
+            local_types=local_types,
+            global_ns=global_ns,
         )
         self._metadata = []
         self._local_types = local_types
@@ -288,7 +299,7 @@ class ConvertToSExpr:
 
     def close_function(
         self, rb: rg.RegionBegin, func_node: Node, fn_type: W_FuncType
-    ) -> rg.Func:
+    ) -> rg.SExpr:
         ctx = self._context
         vars = {internal_prefix("io"), internal_prefix("ret")}
 
@@ -349,6 +360,15 @@ class ConvertToSExpr:
             region_then = ctx.close_region(rb_then, updated_vars)
             region_else = ctx.close_region(rb_else, updated_vars)
 
+            # type metadata
+            for region in (region_then, region_else):
+                for port in region.ports:
+                    if ty := self._local_types.get(port.name):
+                        ti = sg.TypeInfo(
+                            value=port.value, typename=ty.fqn.fullname
+                        )
+                        self._metadata.append(ctx.grm.write(ti))
+
             ifelse = ctx.grm.write(
                 rg.IfElse(
                     cond=test_expr,
@@ -365,7 +385,7 @@ class ConvertToSExpr:
                 last = self.codegen(blk)
             return last
 
-    def codegen(self, block: BasicBlock) -> ase.SExpr:
+    def codegen(self, block: BasicBlock) -> ase.SExpr | None:
         print("AT", block.name)
         ctx = self._context
         grm = ctx.grm
@@ -412,6 +432,7 @@ class ConvertToSExpr:
                         ctx.update_scope(
                             loop, sorted(updated_vars - {loopcondvar})
                         )
+                        return
                     else:
                         return self.handle_region(block.subregion)
                 else:
@@ -435,6 +456,7 @@ class ConvertToSExpr:
                         case _:
                             raise ValueError(type(v))
                     ctx.store_local(k, const)
+                    return
 
             case SyntheticExitingLatch():
                 io = ctx.get_io()
@@ -445,6 +467,7 @@ class ConvertToSExpr:
                 )
 
                 ctx.store_local(ctx.loopcond_name, loopcond)
+                return
 
             case SyntheticReturn():
                 ctx.load_local("__scfg_return_value__")
@@ -459,6 +482,8 @@ class ConvertToSExpr:
                 return ctx.get_io()
             case _:
                 raise AssertionError(type(block))
+
+        raise AssertionError("unreachable", block)
 
     def emit_statement(self, stmt: Node) -> ase.SExpr:
         ctx = self._context
