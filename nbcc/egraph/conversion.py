@@ -44,10 +44,14 @@ class ExtendEGraphToRVSDG(_EGraphToRVSDG):
                 return grm.write(
                     sg.BuiltinOp(opname="struct_get", args=(struct, pos))
                 )
-            case "Call_direct", {"fqn": str(fqn), "io": io, "args": args}:
-                return grm.write(
-                    sg.CallDirect(fqn=fqn, io=io, args=args)
-                )
+            case "CallFQN", {"fqn": fqn, "io": io, "args": args}:
+                return grm.write(sg.CallFQN(fqn=fqn, io=io, args=args))
+            case "CalleeFQN", {"fullname": str(fullname)}:
+                return grm.write(sg.FQN(fullname))
+            case "FQN.function", {"fullname": str(fullname)}:
+                fqn = grm.write(sg.FQN(fullname))
+                return fqn
+
             case _:
                 # Use parent's implementation for other terms.
                 return super().handle_Term(op, children, grm)
@@ -58,7 +62,19 @@ class ExtendEGraphToRVSDG(_EGraphToRVSDG):
         match op, children:
             case "Metadata.typeinfo", {
                 "value": value,
-                "typename": str(typename),
+                "type_expr": type_expr,
             }:
-                return grm.write(sg.TypeInfo(value=value, typename=typename))
+                return grm.write(sg.TypeInfo(value=value, type_expr=type_expr))
         raise NotImplementedError(key, op, children)
+
+    def handle_TypeExpr(
+        self, key: str, op: str, children: dict | list, grm: sg.Grammar
+    ):
+        match op, children:
+            case "TypeExpr.simple", {"name": str(name)}:
+                return grm.write(sg.TypeExpr(name=name, args=()))
+            case "TypeExpr.function", {"args": args}:
+                return grm.write(
+                    sg.TypeExpr(name=".function", args=args.children)
+                )
+        raise NotImplementedError(op, children)

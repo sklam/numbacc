@@ -7,18 +7,23 @@ import tempfile
 from contextlib import ExitStack
 
 import sealir.rvsdg.grammar as rg
-from egglog import EGraph, Vec
+from egglog import EGraph
 from mlir import ir
 from sealir.eqsat.rvsdg_convert import egraph_conversion
 from sealir.eqsat.rvsdg_eqsat import GraphRoot
-from sealir.eqsat.rvsdg_extract import egraph_extraction
+from sealir.eqsat.rvsdg_extract import (
+    egraph_extraction,
+    CostModel as _CostModel,
+)
 from sealir.rvsdg import format_rvsdg
-from sealir.ase import SExpr
+from sealir.ase import SExpr, TapeCrawler
 
 from nbcc.egraph.conversion import ExtendEGraphToRVSDG
 from nbcc.egraph.rules import egraph_optimize, egraph_convert_metadata
 from nbcc.frontend import TranslationUnit, frontend
-from nbcc.mlir_backend.backend import Backend
+from nbcc.frontend.grammar import TypeInfo
+from nbcc.mlir_backend.backend import Backend, Lowering, MDMap
+from nbcc.developer import TODO
 
 logging.disable(logging.INFO)
 
@@ -26,15 +31,21 @@ logging.disable(logging.INFO)
 def compile(path: str, out_path: str) -> None:
     tu = frontend(path)
 
-    func_map, mdlist = middle_end(tu, "main")
+    func_map, mdlist = middle_end(tu)
     pprint(func_map)
-    [rvsdg_ir] = func_map.values()
     be = Backend()
-    warnings.warn("Not handling lowering argtypes")
-    module = be.lower(rvsdg_ir, (), mdlist=mdlist)
-    print(module)
-    module.operation.verify()
+    mdmap = MDMap()
+    mdmap.load(mdlist)
 
+    module = be.make_module(path)
+    for fname, rvsdg_ir in func_map.items():
+        lowering = Lowering(be, module, mdmap, func_map)
+        TODO("Not handling lowering argtypes")
+        lowering.lower(rvsdg_ir)
+        print(lowering.module.operation.get_asm())
+    lowering.module.operation.verify()
+
+    print(lowering.module.dump())
     module = be.run_passes(module)
     print("After optimization")
     print(module)
@@ -78,9 +89,7 @@ def make_binary(module: ir.Module, out_path: str):
         )
 
 
-def middle_end(
-    tu: TranslationUnit, fname: str
-) -> tuple[dict[str, SExpr], list[SExpr]]:
+def middle_end(tu: TranslationUnit) -> tuple[dict[str, SExpr], list[SExpr]]:
     func_nodes = {}
     mdlist = []
 
@@ -99,27 +108,55 @@ def middle_end(
         expand_struct_type(tu, egraph)
 
         egraph_optimize(egraph)
-        # egraph.display()
 
-        extraction = egraph_extraction(egraph)
+        extraction = egraph_extraction(egraph, cost_model=CostModel())
         extraction.compute()
         extresult = extraction.extract_common_root()
         print("egraph extracted")
         print("cost", extresult.cost)
 
+        tape = fi.region._tape
+        last = tape.last
         root = extresult.convert(fi.region, ExtendEGraphToRVSDG)
-        print(root._tape.dump())
 
         for node in root._args:
             match node:
-                case rg.Func(fname=str(fname)):
-                    assert fname not in func_nodes
-                    func_nodes[fname] = node
-                case _:
-                    mdlist.append(node)
+                case rg.Func(fname=str(matched_fqn)):
+                    assert matched_fqn not in func_nodes
+                    func_nodes[matched_fqn] = node
+
+        crawler = TapeCrawler(tape, root._get_downcast())
+        crawler.move_to_pos_of(last)
+        crawler.move_to_first_record()
+
+        for rec in crawler.walk():
+            node = rec.to_expr()
+            if isinstance(node, TypeInfo):
+                mdlist.append(node)
+
+    assert len(func_nodes) >= 1
     for func in func_nodes.values():
         print(format_rvsdg(func))
+
+        print(func._tape.dump())
     return func_nodes, mdlist
+
+
+class CostModel(_CostModel):
+    def get_cost_function(
+        self,
+        nodename,
+        op,
+        ty,
+        cost,
+        children,
+    ):
+        if op in ["Py_Call", "Py_LoadGlobal"]:
+            return self.get_simple(10000)
+        elif op in ["CallFQN"]:
+            return self.get_simple(1)
+        else:
+            return super().get_cost_function(nodename, op, ty, cost, children)
 
 
 def expand_struct_type(tu: TranslationUnit, egraph):

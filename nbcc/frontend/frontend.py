@@ -25,7 +25,8 @@ from spy.fqn import FQN
 from spy.interop import redshift
 from spy.vm.function import W_ASTFunc, W_BuiltinFunc, W_FuncType
 from spy.vm.struct import W_StructType
-from spy.vm.modules.types import W_LiftedObject, W_LiftedType
+from spy.vm.modules.types import W_Type, W_LiftedType
+from spy.vm.vm import SPyVM
 from spy.location import Loc
 
 from . import grammar as sg
@@ -65,6 +66,9 @@ class TranslationUnit:
     def list_functions(self) -> list[FQN]:
         return list(self._symtabs)
 
+    def list_builtins(self) -> list[FQN]:
+        return list(self._builtins)
+
     def __repr__(self):
         cname = self.__class__.__name__
         syms = ", ".join(map(str, self._symtabs))
@@ -82,17 +86,13 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
     fqn_to_local_type = {}
     for fqn, w_obj in vm.fqns_by_modname(w_mod.name):
         print("?" * 80)
-        print(fqn, "|", w_obj)
+        print(fqn, "|", w_obj, "::", type(w_obj))
         if isinstance(w_obj, W_ASTFunc):
-            print("functype:", w_obj.w_functype)
             if w_obj.locals_types_w is not None:
-                print(w_obj.locals_types_w)
-                node = convert_to_node(w_obj.funcdef, vm=vm)
-                pprint(node)
+                node = convert_to_node(w_obj.funcdef, vm=vm).insert_fqn(fqn)
                 symtab[fqn] = node
                 fn_type[fqn] = w_obj.w_functype
                 fqn_to_local_type[fqn] = w_obj.locals_types_w
-                print()
         elif isinstance(w_obj, W_BuiltinFunc):
             tu.add_builtin(fqn, w_obj)
         elif isinstance(w_obj, W_StructType):
@@ -122,6 +122,7 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
             fn_type[fqn],
             fqn_to_local_type[fqn],
             fqn_to_local_type,
+            vm,
         )
         print(format_rvsdg(region))
         tu.add_function(FunctionInfo(fqn=fqn, region=region, metadata=mds))
@@ -135,9 +136,10 @@ def convert_to_sexpr(
     fn_type: W_FuncType,
     local_types: dict[str, Any],
     global_ns: dict[str, Any],
+    vm: SPyVM,
 ) -> tuple[SCFG, list]:
     with ase.Tape() as tape:
-        cts = ConvertToSExpr(tape, local_types, global_ns)
+        cts = ConvertToSExpr(tape, local_types, global_ns, vm)
         with cts.setup_function(func_node) as rb:
             cts.handle_region(scfg)
 
@@ -264,6 +266,7 @@ class ConvertToSExpr:
         tape: ase.Tape,
         local_types: dict[str, Any],
         global_ns: dict[str, Any],
+        vm: SPyVM,
     ):
         self._tape = tape
         self._context = ConversionContext(
@@ -274,7 +277,44 @@ class ConvertToSExpr:
         self._metadata = []
         self._local_types = local_types
         self._global_ns = global_ns
+        self._vm = vm
         self._args = []
+        self._memo_fntypes = {}
+
+    def insert_typeinfo(
+        self, value: ase.SExpr, type_expr: sg.TypeExpr
+    ) -> None:
+        self._metadata.append(
+            self._context.grm.write(
+                sg.TypeInfo(value=value, type_expr=type_expr)
+            )
+        )
+
+    def insert_func_typeinfo(
+        self, value: ase.SExpr, functype: W_FuncType
+    ) -> None:
+        tys = [self.emit_type(param.w_T) for param in functype.params]
+        restype = self.emit_type(functype.w_restype)
+        typexpr = self._context.grm.write(
+            sg.TypeExpr(name=".function", args=(restype, *tys))
+        )
+        return self.insert_typeinfo(value, typexpr)
+
+    def emit_function_type(
+        self, resty: sg.TypeExpr, *args: sg.TypeExpr
+    ) -> sg.TypeExpr:
+        return self._context.grm.write(
+            sg.TypeExpr(name=".function", args=(resty, *args))
+        )
+
+    def emit_type(self, ty: W_Type):
+        if fqn := ty.fqn:
+            return self._context.grm.write(
+                sg.TypeExpr(name=fqn.fullname, args=())
+            )
+        else:
+            print("???ty", ty, type(ty))
+            breakpoint()
 
     @contextmanager
     def setup_function(self, func_node: Node):
@@ -303,10 +343,7 @@ class ConvertToSExpr:
         ctx = self._context
         vars = {internal_prefix("io"), internal_prefix("ret")}
 
-        name = func_node.name
-        if not func_node.args:
-            warnings.warn("ARGS not handled")
-        args = ctx.grm.write(rg.Args(()))
+        assert len(func_node.args) == len(self._args)
 
         # redirect return value
         scope_map = ctx.scope_map[rb]
@@ -316,18 +353,31 @@ class ConvertToSExpr:
         scope_map.local_vars[internal_prefix("ret")] = retval
         vars.add(internal_prefix("ret"))
 
+        argtypes = []
         for arg_sexpr, param in zip(self._args, fn_type.params, strict=True):
             fqn = param.w_T.fqn
-            ctx.grm.write(sg.TypeInfo(value=arg_sexpr, typename=fqn.fullname))
+            typexpr = ctx.grm.write(sg.TypeExpr(name=fqn.fullname, args=()))
+            argtypes.append(typexpr)
+            self.insert_typeinfo(arg_sexpr, typexpr)
+        args = ctx.grm.write(rg.Args(arguments=tuple(argtypes)))
 
         retval = scope_map.local_vars[internal_prefix("ret")]
         ret_tyname = fn_type.w_restype.fqn.fullname
-        self._metadata.append(
-            ctx.grm.write(sg.TypeInfo(value=retval, typename=ret_tyname))
+        restype = ctx.grm.write(sg.TypeExpr(name=ret_tyname, args=()))
+        self.insert_typeinfo(retval, type_expr=restype)
+
+        body = ctx.close_region(rb, vars)
+        fnty = ctx.grm.write(
+            sg.TypeExpr(name=".function", args=tuple(argtypes))
         )
+        self.insert_typeinfo(body, fnty)
 
         return ctx.grm.write(
-            rg.Func(fname=name, args=args, body=ctx.close_region(rb, vars))
+            rg.Func(
+                fname=func_node.fqn.fullname,
+                args=args,
+                body=body,
+            )
         )
 
     def handle_region(self, scfg: SCFG):
@@ -364,10 +414,10 @@ class ConvertToSExpr:
             for region in (region_then, region_else):
                 for port in region.ports:
                     if ty := self._local_types.get(port.name):
-                        ti = sg.TypeInfo(
-                            value=port.value, typename=ty.fqn.fullname
+                        typexpr = ctx.grm.write(
+                            sg.TypeExpr(name=ty.fqn.fullname, args=())
                         )
-                        self._metadata.append(ctx.grm.write(ti))
+                        self.insert_typeinfo(port.value, typexpr)
 
             ifelse = ctx.grm.write(
                 rg.IfElse(
@@ -517,8 +567,10 @@ class ConvertToSExpr:
                 self._metadata.append(md)
 
                 if ty := self._local_types.get(target):
-                    ti = sg.TypeInfo(value=expr, typename=ty.fqn.fullname)
-                    self._metadata.append(grm.write(ti))
+                    typexpr = ctx.grm.write(
+                        sg.TypeExpr(name=ty.fqn.fullname, args=())
+                    )
+                    self.insert_typeinfo(expr, typexpr)
 
                 return expr
 
@@ -537,6 +589,7 @@ class ConvertToSExpr:
     def emit_expression(self, node: Node) -> ase.SExpr:
         ctx = self._context
         grm = ctx.grm
+        vm = self._vm
         match node:
             case Node("NameLocal"):
                 return ctx.load_local(node.sym.name)
@@ -547,19 +600,31 @@ class ConvertToSExpr:
                 ),
                 args=list(args),
             ):
+                w_obj = vm.lookup_global(callee_fqn)
+                functype = w_obj.w_functype
+                # if callee_fqn.fullname.startswith("mlir_tensor::"):
+                #     breakpoint()
                 callee = grm.write(
-                    rg.PyLoadGlobal(io=ctx.get_io(), name=str(callee_fqn))
+                    rg.PyLoadGlobal(
+                        io=ctx.get_io(), name=str(callee_fqn.fullname)
+                    )
                 )
-
-                return ctx.insert_io_node(
+                self.insert_func_typeinfo(callee, functype)
+                res = ctx.insert_io_node(
                     rg.PyCall(
                         io=ctx.get_io(),
                         func=callee,
                         args=tuple(map(self.emit_expression, args)),
                     )
                 )
+                restype = functype.w_restype
+                self.insert_typeinfo(res, self.emit_type(restype))
+                return res
             case Node("Constant", value=int(ival)):
-                return grm.write(rg.PyInt(ival))
+                cval = grm.write(rg.PyInt(ival))
+                i32 = grm.write(sg.TypeExpr(name="builtins::i32", args=()))
+                self.insert_typeinfo(cval, i32)
+                return cval
 
             case Node("Constant", value=None):
                 return grm.write(rg.PyNone())

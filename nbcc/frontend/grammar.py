@@ -1,4 +1,4 @@
-import egglog
+from __future__ import annotations
 import sealir.rvsdg.grammar as rg
 from sealir.grammar import Grammar as _Grammar, Rule
 from sealir.ase import SExpr
@@ -10,16 +10,29 @@ class _Root(Rule):
 
 class BuiltinOp(_Root):
     opname: str
-    args: tuple[SExpr]
+    args: tuple[SExpr, ...]
+
+
+class TypeExpr(_Root):
+    name: str
+    args: tuple[SExpr, ...]
 
 
 class TypeInfo(_Root):
     value: SExpr
-    typename: str
+    type_expr: SExpr
 
 
-class CallDirect(_Root):
-    fqn: str
+class FQN(_Root):
+    fullname: str
+
+
+class TypedFQN(_Root):
+    fullname: str
+
+
+class CallFQN(_Root):
+    fqn: SExpr
     io: SExpr
     args: tuple[SExpr]
 

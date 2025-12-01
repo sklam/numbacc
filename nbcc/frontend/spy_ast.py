@@ -1,9 +1,11 @@
+from __future__ import annotations
 import ast as py_ast
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
 import spy.ast
 from spy.analyze.symtable import Color, Symbol
+from spy.fqn import FQN
 
 if TYPE_CHECKING:
     from spy.vm.vm import SPyVM
@@ -34,6 +36,10 @@ class Node:
             return self._attrdict[key]
         except KeyError:
             raise AttributeError(key) from None
+
+    def insert_fqn(self, fqn: FQN) -> Node:
+        self._attrdict["fqn"] = fqn
+        return self
 
 
 def convert_to_node(

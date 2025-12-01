@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import warnings
 from collections import defaultdict
 import ctypes
 from contextlib import contextmanager
@@ -15,12 +14,17 @@ import mlir.execution_engine as execution_engine
 import mlir.ir as ir
 import mlir.passmanager as passmanager
 import mlir.runtime as runtime
+
+from spy.fqn import FQN
+
 import numpy as np
+
 from mlir.dialects import llvm
 from sealir import ase
 from sealir.rvsdg import grammar as rg
 from sealir.rvsdg import internal_prefix
 
+from nbcc.developer import TODO
 from ..frontend import grammar as sg
 
 # ## MLIR Backend Implementation
@@ -51,18 +55,27 @@ class MDMap:
                 case sg.TypeInfo(value=value):
                     self.mdmap[value].append(md)
                 case _:
-                    warnings.warn(f"Unknown MD: {md}")
+                    breakpoint()
+                    TODO(f"Unknown MD: {md}: {type(md)}")
 
     def lookup_typeinfo(self, val: ase.SExpr) -> list[sg.TypeInfo]:
         return [x for x in self.mdmap[val] if isinstance(x, sg.TypeInfo)]
 
+    def lookup_typeinfo_by_fqn(self, fqn: str) -> list[sg.TypeInfo]:
+        for md, tis in self.mdmap.items():
+            match md:
+                case sg.FQN(fullname=fqn_fullname):
+                    if fqn_fullname == fqn:
+                        return [x for x in tis if isinstance(x, sg.TypeInfo)]
+        raise NameError(f"{fqn!r} not found")
+
 
 class Backend:
+
     def __init__(self):
         self.context = context = ir.Context()
         # context.allow_unregistered_dialects = True
-        self._declared = {}
-        with context:
+        with context, ir.Location.name("Backend.__init__"):
             self.f32 = ir.F32Type.get(context=context)
             self.f64 = ir.F64Type.get(context=context)
             self.i8 = ir.IntegerType.get_signless(8, context=context)
@@ -72,18 +85,91 @@ class Backend:
             self.io_type = ir.IntegerType.get_signless(1, context=context)
             self.llvm_ptr = ir.Type.parse("!llvm.ptr")
             self.none_type = ir.Type.parse("!llvm.struct<()>")
+            from mlir.dialects.tensor import UnrankedTensorType
 
-    def lower_type(self, ty: str) -> ir.Type:
+            self.unranked_tensor_f64 = UnrankedTensorType.get(self.f64)
+
+    def lower_type(self, ty: sg.TypeExpr) -> ir.Type:
         """Type Lowering
 
         Convert SealIR types to MLIR types for compilation.
         """
         match ty:
-            case "builtins::i32":
-                return self.i32
-            case "types::NoneType":
-                return self.none_type
+            case sg.TypeExpr(name=str(name), args=()):
+                match name:
+                    case "builtins::i32":
+                        return self.i32
+                    case "types::NoneType":
+                        return self.none_type
+                    case "mlir_tensor_lib::make_tensor_type[f64]::TensorType":
+                        TODO(
+                            "TODO: lower_type mlir_tensor_lib::make_tensor_type[f64]::TensorType "
+                        )
+                        return self.unranked_tensor_f64
+                    case "mlir::type::tensor<*xf64>":
+                        TODO("TODO: lower_type mlir::type::tensor<*xf64> ")
+                        return self.unranked_tensor_f64
+
         raise NotImplementedError(f"unknown type: {ty}")
+
+    def get_ll_type(self, expr: ase.SExpr, mdmap: MDMap) -> sg.TypeInfo | None:
+        mds = mdmap.lookup_typeinfo(expr)
+        if not mds:
+            return None
+        [ty] = mds
+        return self.lower_type(ty.type_expr)
+
+    def make_module(self, module_name: str) -> ir.Module:
+        with self.context:
+            return ir.Module.create(loc=ir.Location.name(module_name))
+
+    def run_passes(self, module):
+        """MLIR Pass Pipeline
+
+        Apply MLIR passes for optimization and lowering to LLVM IR.
+        """
+        if _DEBUG:
+            module.dump()
+
+        if _DEBUG:
+            module.context.enable_multithreading(False)
+
+        pass_man = passmanager.PassManager(context=module.context)
+        pass_man.add("convert-linalg-to-loops")
+        pass_man.add("convert-scf-to-cf")
+        pass_man.add("finalize-memref-to-llvm")
+        pass_man.add("convert-math-to-libm")
+        pass_man.add("convert-func-to-llvm")
+        pass_man.add("convert-arith-to-llvm")
+        pass_man.add("convert-cf-to-llvm")
+        pass_man.add("convert-index-to-llvm")
+        pass_man.add("reconcile-unrealized-casts")
+        pass_man.enable_verifier(True)
+        pass_man.run(module.operation)
+        # Output LLVM-dialect MLIR
+        if _DEBUG:
+            module.dump()
+        return module
+
+
+class Lowering:
+    be: Backend
+    module: ir.Module
+    mdmap: MDMap
+    loc: ir.Location
+
+    def __init__(
+        self,
+        be: Backend,
+        module: ir.Module,
+        mdmap: MDMap,
+        func_map: dict[str, ase.SExpr],
+    ):
+        self.be = be
+        self.module = module
+        self.mdmap = mdmap
+        self.func_map = func_map
+        self._declared = {}
 
     def get_return_types(self, root) -> list[ir.Type]:
         [retval] = [
@@ -92,32 +178,35 @@ class Backend:
             if port.name == internal_prefix("ret")
         ]
         [ti] = self.mdmap.lookup_typeinfo(retval)
-        return [self.lower_type(ti.typename)]
+        return [self.be.lower_type(ti.type_expr)]
 
-    def lower(self, root: rg.Func, argtypes, mdlist: Sequence[ase.SExpr]):
+    def lower(self, root: rg.Func):
         """Expression Lowering
 
         Lower RVSDG expressions to MLIR operations, handling control flow
         and data flow constructs.
         """
-        context = self.context
+        context = self.be.context
         self.loc = loc = ir.Location.name(f"{self}.lower()", context=context)
-        self.module = module = ir.Module.create(loc=loc)
-        self.mdmap = MDMap()
-        self.mdmap.load(mdlist)
+        module = self.module
 
         function_name = root.fname
-
         # Get the module body pointer so we can insert content into the
         # module.
         self.module_body = module_body = ir.InsertionPoint(module.body)
         # Convert SealIR types to MLIR types.
-        input_types = tuple([self.lower_type(x) for x in argtypes])
+
+        input_types = tuple(
+            [self.be.lower_type(x) for x in root.args.arguments]
+        )
         output_types = self.get_return_types(root)
 
         with context, loc, module_body:
             # Constuct a function that emits a callable C-interface.
-            fnty = func.FunctionType.get([], output_types)
+            fnty = func.FunctionType.get(input_types, output_types)
+            if function_name.endswith("::main"):
+                TODO("XXX: hack main() function handling")
+                function_name = "main"
             fun = func.FuncOp(function_name, fnty)
             fun.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
@@ -164,45 +253,12 @@ class Backend:
         # Function construction when all the constants have been initialized.
         with context, loc, constant_entry:
             cf.br([], fun.body.blocks[1])
-        return module
 
-    def run_passes(self, module):
-        """MLIR Pass Pipeline
-
-        Apply MLIR passes for optimization and lowering to LLVM IR.
-        """
-        if _DEBUG:
-            module.dump()
-
-        if _DEBUG:
-            module.context.enable_multithreading(False)
-
-        pass_man = passmanager.PassManager(context=module.context)
-        pass_man.add("convert-linalg-to-loops")
-        pass_man.add("convert-scf-to-cf")
-        pass_man.add("finalize-memref-to-llvm")
-        pass_man.add("convert-math-to-libm")
-        pass_man.add("convert-func-to-llvm")
-        pass_man.add("convert-arith-to-llvm")
-        pass_man.add("convert-cf-to-llvm")
-        pass_man.add("convert-index-to-llvm")
-        pass_man.add("reconcile-unrealized-casts")
-        pass_man.enable_verifier(True)
-        pass_man.run(module.operation)
-        # Output LLVM-dialect MLIR
-        if _DEBUG:
-            module.dump()
+        fun.operation.verify()
         return module
 
     def _cast_return_value(self, val):
         return val
-
-    def get_ll_type(self, expr: ase.SExpr) -> sg.TypeInfo | None:
-        mds = self.mdmap.lookup_typeinfo(expr)
-        if not mds:
-            return None
-        [ty] = mds
-        return self.lower_type(ty.typename)
 
     def lower_expr(self, expr: SExpr, state: LowerStates):
         """Expression Lowering Implementation
@@ -212,9 +268,14 @@ class Backend:
         """
 
         module = self.module
-        context = self.context
+        context = self.be.context
         match expr:
-            case rg.Func(args=args, body=body):
+            case rg.Func(args=args, body=body, fname=fqn):
+                TODO("XXX: no way to get return type")
+                # [fqn_ti] = self.mdmap.lookup_typeinfo_by_fqn(fqn)
+                # resty = fqn_ti.type_expr.args[0]
+                # print(fqn)
+                # print(resty.name)
                 names = {
                     argspec.name: state.function_block.arguments[i]
                     for i, argspec in enumerate(args.arguments)
@@ -222,7 +283,7 @@ class Backend:
                 argvalues = []
                 for k in body.begin.inports:
                     if k == internal_prefix("io"):
-                        v = arith.constant(self.io_type, 0)
+                        v = arith.constant(self.be.io_type, 0)
                     else:
                         v = names[k]
                     argvalues.append(v)
@@ -239,6 +300,7 @@ class Backend:
                 else:
                     retval = outs[retidx]
                     func.ReturnOp([self._cast_return_value(retval)])
+
             case rg.RegionBegin(inports=ins):
                 portvalues = []
                 for i, k in enumerate(ins):
@@ -270,17 +332,19 @@ class Backend:
 
             case rg.PyInt(int(ival)):
                 with state.constant_block:
-                    const = arith.constant(self.i32, ival)  # HACK: select type
+                    const = arith.constant(
+                        self.be.i32, ival
+                    )  # HACK: select type
                 return const
 
             case rg.PyBool(int(ival)):
                 with state.constant_block:
-                    const = arith.constant(self.boolean, ival)
+                    const = arith.constant(self.be.boolean, ival)
                 return const
 
             case rg.PyFloat(float(fval)):
                 with state.constant_block:
-                    const = arith.constant(self.f64, fval)
+                    const = arith.constant(self.be.f64, fval)
                 return const
 
             case rg.PyStr(str(strval)):
@@ -293,7 +357,7 @@ class Backend:
                     )
                     struct_value = struct_value = ir.ArrayAttr.get(
                         [
-                            ir.IntegerAttr.get(self.i64, length),
+                            ir.IntegerAttr.get(self.be.i64, length),
                             ir.StringAttr.get(encoded),
                         ]
                     )
@@ -308,7 +372,7 @@ class Backend:
                         addr_space=0,
                     )
                 with state.constant_block:
-                    ptr_type = self.llvm_ptr
+                    ptr_type = self.be.llvm_ptr
                     str_addr = llvm.AddressOfOp(
                         ptr_type, ir.FlatSymbolRefAttr.get(sym_name)
                     )
@@ -341,7 +405,7 @@ class Backend:
                 return arith.cmpi(
                     arith.CmpIPredicate.eq,
                     operand,
-                    arith.constant(self.i32, 0),
+                    arith.constant(self.be.i32, 0),
                 )
 
             case sg.BuiltinOp("print_i32", (io, operand)):
@@ -349,7 +413,7 @@ class Backend:
                 operand = yield operand
 
                 print_fn = self.declare_builtins(
-                    "spy_builtins$print_i32", [self.i32], []
+                    "spy_builtins$print_i32", [self.be.i32], []
                 )
                 func.call(
                     print_fn.type.results, "spy_builtins$print_i32", [operand]
@@ -361,7 +425,7 @@ class Backend:
                 operand = yield operand
 
                 print_fn = self.declare_builtins(
-                    "spy_builtins$print_str", [self.llvm_ptr], []
+                    "spy_builtins$print_str", [self.be.llvm_ptr], []
                 )
 
                 func.call(
@@ -387,7 +451,7 @@ class Backend:
             case sg.BuiltinOp("struct_get", args=(struct, int(pos))):
                 struct_value = yield struct
 
-                resty = self.i32  # HACK
+                resty = self.be.i32  # HACK
                 return llvm.extractvalue(
                     resty, struct_value, ir.DenseI64ArrayAttr.get([pos])
                 )
@@ -473,22 +537,61 @@ class Backend:
 
             case rg.Undef(name):
                 # HACK
-                return arith.constant(self.i32, 0)
+                return arith.constant(self.be.i32, 0)
 
-            case sg.CallDirect(fqn=callee_fqn, io=io_val, args=args_vals):
-                breakpoint()
-                raise NotImplementedError(expr)
+            case sg.CallFQN(
+                fqn=sg.FQN() as callee_fqn, io=io_val, args=args_vals
+            ):
+
+                if callee_fqn.fullname.endswith(
+                    "::__lift__"
+                ) or callee_fqn.fullname.endswith("::__unlift__"):
+                    TODO("XXX: lift/unlift lowering is a hack")
+                    [val] = args_vals
+                    return [(yield io_val), (yield val)]
+
+                mdmap = self.mdmap
+
+                [callee_ti] = mdmap.lookup_typeinfo(callee_fqn)
+
+                resty = self.be.lower_type(callee_ti.type_expr.args[0])
+                argtys = []
+                for arg in args_vals:
+                    [ti] = mdmap.lookup_typeinfo(arg)
+                    argtys.append(self.be.lower_type(ti.type_expr))
+
+                lowered_args = []
+                for arg in args_vals:
+                    lowered_args.append((yield arg))
+
+                if callee_fqn.fullname.startswith("mlir::op::"):
+                    TODO("XXX: hardcode support of MLIR::OP ")
+                    with self.module_body:
+                        fntype = ir.FunctionType.get(argtys, [resty])
+                        func.FuncOp(
+                            name=callee_fqn.fullname,
+                            type=fntype,
+                            visibility="private",
+                        )
+
+                if callee_fqn.fullname == "builtins::print_object":
+                    TODO("XXX: hardcode support of builtins::print_object ")
+                    with self.module_body:
+                        fntype = ir.FunctionType.get(argtys, [resty])
+                        func.FuncOp(
+                            name=callee_fqn.fullname,
+                            type=fntype,
+                            visibility="private",
+                        )
+
+                call = func.call([resty], callee_fqn.fullname, lowered_args)
+                return [io_val, call]
+            case rg.PyNone():
+                return llvm.mlir_zero(self.be.none_type)
             case _:
                 raise NotImplementedError(
                     expr, type(expr), ase.as_tuple(expr, depth=3)
                 )
-
-    def get_port_type(self, port) -> ir.Attribute:
-        if port.name == internal_prefix("io"):
-            ty = self.io_type
-        else:
-            ty = self.get_ll_type(port.value)
-        return ty
 
     # ## JIT Compilation
     #
@@ -526,6 +629,13 @@ class Backend:
         shared_libs.append(os.path.abspath("./libnbrt.so"))
         print(shared_libs)
         return self.jit_compile_extra(llmod, input_types, output_types)
+
+    def get_port_type(self, port) -> ir.Attribute:
+        if port.name == internal_prefix("io"):
+            ty = self.be.io_type
+        else:
+            ty = self.be.get_ll_type(port.value, self.mdmap)
+        return ty
 
     def jit_compile_extra(
         self,

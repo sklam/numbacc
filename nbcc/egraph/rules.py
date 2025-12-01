@@ -10,6 +10,7 @@ from egglog import union
 from sealir.ase import SExpr
 
 from ..frontend import grammar as sg
+from nbcc.developer import TODO
 
 Term = rvsdg.Term
 TermList = rvsdg.TermList
@@ -26,31 +27,55 @@ def make_schedule() -> egglog.Schedule:
         ruleset_simplify_builtin_arith
         | ruleset_simplify_builtin_print
         | ruleset_typing
-        | ruleset_call_direct
+        | ruleset_call_fqn
     ).saturate()
 
 
 def egraph_convert_metadata(mdlist: list[SExpr], memo) -> egglog.Vec[Metadata]:
     def gen(md):
+        from sealir.eqsat.rvsdg_convert import WrapTerm
+
         match md:
             case rg.DbgValue(name, value, srcloc, interloc):
-                warnings.warn("skip DbgValue")
-            case sg.TypeInfo(value=value, typename=str(typename)):
+                TODO("skip DbgValue")
+            case sg.TypeInfo(value=value, type_expr=typexpr):
                 if value in memo:
-                    return Metadata.typeinfo(memo[value], typename)
+                    anchor = memo[value]
+                    if isinstance(anchor, WrapTerm):
+                        anchor = anchor.term
+                    return Metadata.typeinfo(anchor, type_expr=gen(typexpr))
+            case sg.TypeExpr(str(name), tuple(args)):
+                match name:
+                    case ".function":
+                        return TypeExpr.function(list(map(gen, args)))
+                    case _ if not args:
+                        if not args:
+                            return TypeExpr.simple(name)
+
+                raise NotImplementedError(md)
             case _:
-                raise NotImplementedError
+                raise NotImplementedError(md)
 
     return egglog.Vec[Metadata](
         *filter(lambda x: x is not None, map(gen, mdlist))
     )
 
 
+class TypeExpr(egglog.Expr):
+    @classmethod
+    def simple(cls, name: egglog.StringLike) -> TypeExpr: ...
+
+    # @classmethod
+    # def compound(cls, name: egglog.StringLike, *args: TypeExpr) -> TypeExpr:
+    #     ...
+
+    @classmethod
+    def function(cls, args: egglog.Vec[TypeExpr]) -> TypeExpr: ...
+
+
 class Metadata(egglog.Expr):
     @classmethod
-    def typeinfo(
-        cls, value: Term, typename: egglog.StringLike
-    ) -> Metadata: ...
+    def typeinfo(cls, value: Term, type_expr: TypeExpr) -> Metadata: ...
 
 
 @egglog.function
@@ -93,8 +118,17 @@ def Builtin_struct__make__(args: TermList) -> Term: ...
 def Builtin_struct__get_field__(struct: Term, pos: egglog.i64) -> Term: ...
 
 
+class FQN(egglog.Expr):
+    @classmethod
+    def function(cls, fullname: egglog.StringLike) -> Term: ...
+
+
 @egglog.function
-def Call_direct(fqn: egglog.StringLike, io: Term, args: TermList) -> Term: ...
+def CallFQN(fqn: Term, io: Term, args: TermList) -> Term: ...
+
+
+@egglog.function
+def Load_FQN(fqn) -> Term: ...
 
 
 @egglog.ruleset
@@ -224,18 +258,24 @@ def ruleset_typing(x: Term):
 
 
 @egglog.ruleset
-def ruleset_call_direct(
+def ruleset_call_fqn(
     io: Term,
     args: TermList,
     call: Term,
     fqn: egglog.String,
+    callee: Term,
+    functype: TypeExpr,
 ):
     yield egglog.rule(
-        call == py.Py_Call(
+        call
+        == py.Py_Call(
             io=io,
-            func=py.Py_LoadGlobal(io=_w(Term), name=fqn),
+            func=callee,
             args=args,
         ),
+        callee == py.Py_LoadGlobal(io=_w(Term), name=fqn),
+        Metadata.typeinfo(callee, functype),
     ).then(
-        union(call).with_(Call_direct(fqn=fqn, io=io, args=args)),
+        union(call).with_(CallFQN(fqn=callee, io=io, args=args)),
+        union(callee).with_(FQN.function(fqn)),
     )
