@@ -169,7 +169,12 @@ class Backend:
         from .transforms import linalg_transform
 
         tmod = ir.Module.parse(linalg_transform, context=module.context)
-        run_transform(module, tmod)
+        try:
+            run_transform(module, tmod)
+        except Exception:
+            # Ignore transform error
+            TODO("there is a better way to handle transform dialect error")
+            pass
 
         print("After Phase 2 (transform)")
         print(module.operation.get_asm())
