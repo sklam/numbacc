@@ -128,27 +128,24 @@ class Backend:
 
         Apply MLIR passes for optimization and lowering to LLVM IR.
         """
-        if _DEBUG:
-            module.dump()
+        from . import mlir_passes as mp
 
-        if _DEBUG:
-            module.context.enable_multithreading(False)
-
-        pass_man = passmanager.PassManager(context=module.context)
-        pass_man.add("convert-linalg-to-loops")
-        pass_man.add("convert-scf-to-cf")
-        pass_man.add("finalize-memref-to-llvm")
-        pass_man.add("convert-math-to-libm")
-        pass_man.add("convert-func-to-llvm")
-        pass_man.add("convert-arith-to-llvm")
-        pass_man.add("convert-cf-to-llvm")
-        pass_man.add("convert-index-to-llvm")
-        pass_man.add("reconcile-unrealized-casts")
-        pass_man.enable_verifier(True)
-        pass_man.run(module.operation)
-        # Output LLVM-dialect MLIR
-        if _DEBUG:
-            module.dump()
+        pipeline = mp.module_pipeline(
+            mp.Canonicalize(),
+            mp.ConvertLinalgToLoops(),
+            # Lowering
+            mp.ConvertSCFToCF(),
+            mp.FinalizeMemRefToLLVM(),
+            mp.ConvertMathToLibM(),
+            mp.ConvertFuncToLLVM(),
+            mp.ConvertArithToLLVM(),
+            mp.ConvertCFToLLVM(),
+            mp.ConvertIndexToLLVM(),
+            mp.ReconileUnrealizedCasts(),
+        )
+        pm = passmanager.PassManager.parse(pipeline, context=module.context)
+        pm.enable_verifier(True)
+        pm.run(module.operation)
         return module
 
 
