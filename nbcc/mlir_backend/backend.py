@@ -136,6 +136,14 @@ class Backend:
         with self.context:
             return ir.Module.create(loc=ir.Location.name(module_name))
 
+    def _make_pass_pipeline(self, *passes):
+        from . import mlir_passes as mp
+
+        pipeline = mp.module_pipeline(*passes)
+        pm = passmanager.PassManager.parse(pipeline, context=self.context)
+        pm.enable_verifier(True)
+        return pm
+
     def run_passes(self, module):
         """MLIR Pass Pipeline
 
@@ -143,15 +151,70 @@ class Backend:
         """
         from . import mlir_passes as mp
 
-        pipeline = mp.module_pipeline(
+        self._make_pass_pipeline(
             mp.Canonicalize(),
             mp.Inline(),
-            mp.ConvertTensorToLinalg(),
+            mp.LinalgGeneralizeNamedOps(),
+        ).run(module.operation)
+
+        print("After Phase 1")
+        module.dump()
+
+        from mlir.dialects.transform import interpreter
+
+        def run_transform(module: ir.Module, tmod: ir.Module):
+            [transform_op] = tmod.body.operations
+            interpreter.apply_named_sequence(module, transform_op, tmod)
+
+        from .transforms import linalg_transform
+
+        tmod = ir.Module.parse(linalg_transform, context=module.context)
+        run_transform(module, tmod)
+
+        print("After Phase 2 (transform)")
+        print(module.operation.get_asm())
+
+        self._make_pass_pipeline(
+            mp.LoopInvariantCodeMotion(),
+            mp.FoldMemRefAliasOps(),
+            # Vector
+            mp.LowerVectorMask(),
+            mp.Canonicalize(),
+            mp.FoldTensorSubsetOps(),  # folds tensor-slice into vector-transfer
+            mp.Canonicalize(),
+        ).run(module.operation)
+        print("After Phase 3 (cleanup)")
+        print(module.operation.get_asm())
+
+        self._make_pass_pipeline(
+            # Bufferization
             mp.OneShotBufferize(bufferize_function_boundaries=True),
+            mp.ConvertVectorToSCF(),
+        ).run(module.operation)
+
+        print("After Phase 4 (bufferize)")
+        print(module.operation.get_asm())
+
+        self._make_pass_pipeline(
+            # Affine passes goes after Bufferize
+            # mp.ConvertLinalgToAffineLoops(),
             mp.ConvertLinalgToLoops(),
-            mp.SymbolDCE(),
+            mp.ExpandStridedMetadata(),
+            mp.AffineSimplifyStructures(),
+            mp.LowerAffine(),
+            mp.Canonicalize(),
+            mp.PromoteBuffersToStack(),
+            mp.BufferHoisting(),
+            mp.BufferLoopHoisting(),
+            mp.FoldMemRefAliasOps(),
+            mp.OwnershipBasedBufferDeallocation(),
+            mp.BufferDeallocationSimplification(),
+            mp.BufferizationLowerDeallocations(),
+            mp.ConvertBufferizationToMemRef(),
             # Lowering
+            mp.Canonicalize(),
             mp.ConvertSCFToCF(),
+            mp.ConvertVectorToLLVM(enable_arm_neon=True),
             mp.FinalizeMemRefToLLVM(),
             mp.ConvertMathToLibM(),
             mp.ConvertFuncToLLVM(),
@@ -159,10 +222,7 @@ class Backend:
             mp.ConvertCFToLLVM(),
             mp.ConvertIndexToLLVM(),
             mp.ReconileUnrealizedCasts(),
-        )
-        pm = passmanager.PassManager.parse(pipeline, context=module.context)
-        pm.enable_verifier(True)
-        pm.run(module.operation)
+        ).run(module.operation)
         return module
 
 
@@ -637,9 +697,9 @@ class Lowering:
             case "bufferization.to_tensor":
                 [arg] = args
                 return bufferization.to_tensor(resty, arg, restrict=True)
-            case "bufferization.to_memref":
+            case "bufferization.to_buffer":
                 [arg] = args
-                return bufferization.to_memref(resty, arg)
+                return bufferization.to_buffer(resty, arg)
             case _:
                 raise NotImplementedError(f"Unhandled MLIR op {mlir_op!r}")
 

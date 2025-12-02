@@ -46,7 +46,7 @@ MemRefF64 = MLIR_Type("memref<?xf64>")
 TensorF64 = make_tensor_type[f64]
 
 to_tensor = MLIR_op("bufferization.to_tensor", TensorF64, (MemRefF64,))
-to_memref = MLIR_op("bufferization.to_memref", MemRefF64, (TensorF64,))
+to_memref = MLIR_op("bufferization.to_buffer", MemRefF64, (TensorF64,))
 
 
 def export_tensor_f64_add(a: MemRefF64, b: MemRefF64) -> MemRefF64:

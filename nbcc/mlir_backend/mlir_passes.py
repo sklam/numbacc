@@ -183,6 +183,10 @@ class ReconileUnrealizedCasts(ModulePass):
     passname = "reconcile-unrealized-casts"
 
 
+class LinalgGeneralizeNamedOps(ModulePass):
+    passname = "linalg-generalize-named-ops"
+
+
 class ConvertTensorToLinalg(ModulePass):
     passname = "convert-tensor-to-linalg"
 

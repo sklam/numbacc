@@ -1,5 +1,5 @@
 import logging
-import warnings
+import os
 import subprocess as subp
 from pprint import pprint
 import sys
@@ -100,6 +100,9 @@ def make_binary(module: ir.Module, out_path: str):
 
 
 def make_shared(module: ir.Module, out_path: str):
+    from ctypes.util import find_library
+
+    libdir = os.path.dirname(find_library("mlir_c_runner_utils"))
     with ExitStack() as raii:
         temp_file_mlir = raii.enter_context(
             tempfile.NamedTemporaryFile(suffix=".mlir", mode="w")
@@ -113,6 +116,12 @@ def make_shared(module: ir.Module, out_path: str):
         temp_file_llvmir = raii.enter_context(
             tempfile.NamedTemporaryFile(suffix=".ll", mode="w")
         )
+        temp_file_llvm_opt = raii.enter_context(
+            tempfile.NamedTemporaryFile(suffix=".ll", mode="w")
+        )
+        temp_file_native_obj = raii.enter_context(
+            tempfile.NamedTemporaryFile(suffix=".o", mode="wb")
+        )
         subp.check_call(
             [
                 "mlir-translate",
@@ -124,13 +133,37 @@ def make_shared(module: ir.Module, out_path: str):
         )
         subp.check_call(
             [
+                "opt",
+                "-passes=default<O3>,loop-vectorize,slp-vectorizer",
+                "-S",
+                "-mcpu=native",
+                temp_file_llvmir.name,
+                "-o",
+                temp_file_llvm_opt.name,
+            ]
+        )
+        subp.check_call(
+            [
+                "llc",
+                "-mcpu=native",
+                "-filetype=obj",
+                "--relocation-model=pic",
+                temp_file_llvm_opt.name,
+                "-o",
+                temp_file_native_obj.name,
+            ]
+        )
+        subp.check_call(
+            [
                 "clang",
                 "-shared",
                 "-o",
                 out_path,
-                temp_file_llvmir.name,
+                temp_file_native_obj.name,
                 "-Ldeps/spy/spy/libspy/build/native/release/",
                 "-lspy",
+                f"-L{libdir}",
+                f"-lmlir_c_runner_utils",
             ]
         )
 

@@ -68,3 +68,47 @@ def test_mlir_tensor_lib_add():
         print(output)
 
         np.testing.assert_allclose(output, A + B)
+
+
+NELEM = 200
+
+
+def test_bench_baseline_add(benchmark):
+
+    A = np.arange(NELEM, dtype=np.float64) / NELEM
+    B = np.arange(NELEM, dtype=np.float64) / NELEM
+
+    res = A + B
+    print(res)
+
+    benchmark(lambda: A + B)
+
+
+def test_bench_mlir_tensor_lib_add(benchmark):
+    with compile_lib("mlir_tensor_lib.spy", "lib_mlir_tensor.so") as libname:
+        lib = CDLL(libname)
+        func = getattr(
+            lib, "_mlir_ciface_spy_mlir_tensor_lib$export_tensor_f64_add"
+        )
+        print(func)
+
+        # RUN
+
+        memref_1d_f64 = make_nd_memref_descriptor(1, c_double)
+
+        A = np.arange(NELEM, dtype=np.float64) / 100
+        B = np.arange(NELEM, dtype=np.float64) / 100
+
+        argA = get_ranked_memref_descriptor(A)
+        argB = get_ranked_memref_descriptor(B)
+
+        out_memref = (memref_1d_f64 * 1)()
+        args = [out_memref, byref(argA), byref(argB)]
+        func(*args)
+
+        output = ranked_memref_to_numpy(out_memref)
+        print(output)
+
+        np.testing.assert_allclose(output, A + B)
+
+        benchmark(lambda: func(*args))
