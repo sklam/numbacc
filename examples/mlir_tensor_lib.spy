@@ -1,14 +1,13 @@
 from mlir import MLIR_Type, MLIR_op
-from unsafe import ptr
 
 
 @blue.generic
 def MLIR_tensor_unranked(dtype):
     if dtype == f64:
-        typename = 'f64'
+        typename = "f64"
     else:
         raise TypeError
-    name = 'tensor<*x' + typename + '>'
+    name = "tensor<?x" + typename + ">"
     return MLIR_Type(name)
 
 
@@ -30,7 +29,6 @@ def make_tensor_type(DTYPE):
     return TensorType
 
 
-
 @blue.generic
 def tensor_2d(dtype):
     T = MLIR_tensor_unranked[dtype]
@@ -40,11 +38,20 @@ def tensor_2d(dtype):
     def ctor_tensor(d0: i32, d1: i32) -> TT:
         data = fn_tensor_empty(d0, d1)
         return TT(data)
+
     return ctor_tensor
 
 
+MemRefF64 = MLIR_Type("memref<?xf64>")
 TensorF64 = make_tensor_type[f64]
 
-def tensor_f64_add(a: TensorF64, b: TensorF64) -> TensorF64:
-    return a + b
+to_tensor = MLIR_op("bufferization.to_tensor", TensorF64, (MemRefF64,))
+to_memref = MLIR_op("bufferization.to_memref", MemRefF64, (TensorF64,))
 
+
+def export_tensor_f64_add(a: MemRefF64, b: MemRefF64) -> MemRefF64:
+    ta = to_tensor(a)
+    tb = to_tensor(b)
+    tc = ta + tb
+    c = to_memref(tc)
+    return c

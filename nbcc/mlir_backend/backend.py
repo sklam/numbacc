@@ -78,6 +78,7 @@ class Backend:
         with context, ir.Location.name("Backend.__init__"):
             self.f32 = ir.F32Type.get(context=context)
             self.f64 = ir.F64Type.get(context=context)
+            self.index_type = ir.IndexType.get(context=context)
             self.i8 = ir.IntegerType.get_signless(8, context=context)
             self.i32 = ir.IntegerType.get_signless(32, context=context)
             self.i64 = ir.IntegerType.get_signless(64, context=context)
@@ -85,9 +86,18 @@ class Backend:
             self.io_type = ir.IntegerType.get_signless(1, context=context)
             self.llvm_ptr = ir.Type.parse("!llvm.ptr")
             self.none_type = ir.Type.parse("!llvm.struct<()>")
-            from mlir.dialects.tensor import UnrankedTensorType
 
-            self.unranked_tensor_f64 = UnrankedTensorType.get(self.f64)
+            self.unranked_tensor_f64 = ir.UnrankedTensorType.get(self.f64)
+            self.unranked_memref_f64 = ir.UnrankedMemRefType.get(
+                self.f64, memory_space=None
+            )
+            unknown_dim = ir.ShapedType.get_dynamic_size()
+            self.tensor_1d_f64 = ir.RankedTensorType.get(
+                shape=[unknown_dim], element_type=self.f64
+            )
+            self.memref_1d_f64 = ir.MemRefType.get(
+                shape=[unknown_dim], element_type=self.f64
+            )
 
     def lower_type(self, ty: sg.TypeExpr) -> ir.Type:
         """Type Lowering
@@ -105,10 +115,13 @@ class Backend:
                         TODO(
                             "TODO: lower_type mlir_tensor_lib::make_tensor_type[f64]::TensorType "
                         )
-                        return self.unranked_tensor_f64
-                    case "mlir::type::tensor<*xf64>":
-                        TODO("TODO: lower_type mlir::type::tensor<*xf64> ")
-                        return self.unranked_tensor_f64
+                        return self.tensor_1d_f64
+                    case "mlir::type::tensor<?xf64>":
+                        TODO("TODO: lower_type mlir::type::tensor<?xf64> ")
+                        return self.tensor_1d_f64
+                    case "mlir::type::memref<?xf64>":
+                        TODO("TODO: lower_type mlir::type::memref<?xf64> ")
+                        return self.memref_1d_f64
 
         raise NotImplementedError(f"unknown type: {ty}")
 
@@ -132,7 +145,11 @@ class Backend:
 
         pipeline = mp.module_pipeline(
             mp.Canonicalize(),
+            mp.Inline(),
+            mp.ConvertTensorToLinalg(),
+            mp.OneShotBufferize(bufferize_function_boundaries=True),
             mp.ConvertLinalgToLoops(),
+            mp.SymbolDCE(),
             # Lowering
             mp.ConvertSCFToCF(),
             mp.FinalizeMemRefToLLVM(),
@@ -201,11 +218,23 @@ class Lowering:
         with context, loc, module_body:
             # Constuct a function that emits a callable C-interface.
             fnty = func.FunctionType.get(input_types, output_types)
-            if function_name.endswith("::main"):
+            fqn = FQN(function_name)
+            if fqn.symbol_name == "main":
                 TODO("XXX: hack main() function handling")
-                function_name = "main"
-            fun = func.FuncOp(function_name, fnty)
-            fun.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
+                export_name = "main"
+            else:
+                export_name = fqn.c_name
+            TODO("TODO: is exporting logic")
+            is_exporting = export_name == "main" or fqn.symbol_name.startswith(
+                "export_"
+            )
+            fun = func.FuncOp(
+                export_name,
+                fnty,
+                visibility=("public" if is_exporting else "private"),
+            )
+            if is_exporting:
+                fun.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get()
 
             # Define two blocks within the function, a constant block to
             # define all the constants and a function block for the
@@ -561,27 +590,32 @@ class Lowering:
                 for arg in args_vals:
                     lowered_args.append((yield arg))
 
+                c_name = FQN(callee_fqn.fullname).c_name
+
                 if callee_fqn.fullname.startswith("mlir::op::"):
                     TODO("XXX: hardcode support of MLIR::OP ")
-                    with self.module_body:
-                        fntype = ir.FunctionType.get(argtys, [resty])
-                        func.FuncOp(
-                            name=callee_fqn.fullname,
-                            type=fntype,
-                            visibility="private",
-                        )
 
-                if callee_fqn.fullname == "builtins::print_object":
-                    TODO("XXX: hardcode support of builtins::print_object ")
-                    with self.module_body:
-                        fntype = ir.FunctionType.get(argtys, [resty])
-                        func.FuncOp(
-                            name=callee_fqn.fullname,
-                            type=fntype,
-                            visibility="private",
-                        )
+                    res = self._handle_mlir_op(
+                        FQN(callee_fqn.fullname).symbol_name,
+                        resty,
+                        lowered_args,
+                    )
+                    assert res.owner.verify()
+                    return [io_val, res]
+                    # self.declare_builtins(c_name, argtys, [resty])
 
-                call = func.call([resty], callee_fqn.fullname, lowered_args)
+                # if callee_fqn.fullname == "builtins::print_object":
+                #     TODO("XXX: hardcode support of builtins::print_object ")
+                #     with self.module_body:
+                #         self.declare_builtins(c_name, argtys, [resty])
+                #         fntype = ir.FunctionType.get(argtys, [resty])
+                #         func.FuncOp(
+                #             name=c_name,
+                #             type=fntype,
+                #             visibility="private",
+                #         )
+
+                call = func.call([resty], c_name, lowered_args)
                 return [io_val, call]
             case rg.PyNone():
                 return llvm.mlir_zero(self.be.none_type)
@@ -589,6 +623,25 @@ class Lowering:
                 raise NotImplementedError(
                     expr, type(expr), ase.as_tuple(expr, depth=3)
                 )
+
+    def _handle_mlir_op(self, mlir_op: str, resty, args):
+        from mlir.dialects import linalg, tensor, bufferization
+
+        match mlir_op:
+            case "tensor.add":
+                [lhs, rhs] = args
+                index = arith.constant(self.be.index_type, 0)
+                dim = tensor.dim(args[0], index)
+                out = tensor.empty([dim], element_type=self.be.f64)
+                return linalg.add(lhs, rhs, outs=[out])
+            case "bufferization.to_tensor":
+                [arg] = args
+                return bufferization.to_tensor(resty, arg, restrict=True)
+            case "bufferization.to_memref":
+                [arg] = args
+                return bufferization.to_memref(resty, arg)
+            case _:
+                raise NotImplementedError(f"Unhandled MLIR op {mlir_op!r}")
 
     # ## JIT Compilation
     #

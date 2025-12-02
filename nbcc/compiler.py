@@ -29,6 +29,16 @@ logging.disable(logging.INFO)
 
 
 def compile(path: str, out_path: str) -> None:
+    module = compile_to_mlir(path)
+    make_binary(module, out_path)
+
+
+def compile_shared_lib(path: str, out_path: str) -> None:
+    module = compile_to_mlir(path)
+    make_shared(module, out_path)
+
+
+def compile_to_mlir(path: str) -> ir.Module:
     tu = frontend(path)
 
     func_map, mdlist = middle_end(tu)
@@ -50,7 +60,7 @@ def compile(path: str, out_path: str) -> None:
     print("After optimization")
     print(module)
 
-    make_binary(module, out_path)
+    return module
 
 
 def make_binary(module: ir.Module, out_path: str):
@@ -80,6 +90,42 @@ def make_binary(module: ir.Module, out_path: str):
         subp.check_call(
             [
                 "clang",
+                "-o",
+                out_path,
+                temp_file_llvmir.name,
+                "-Ldeps/spy/spy/libspy/build/native/release/",
+                "-lspy",
+            ]
+        )
+
+
+def make_shared(module: ir.Module, out_path: str):
+    with ExitStack() as raii:
+        temp_file_mlir = raii.enter_context(
+            tempfile.NamedTemporaryFile(suffix=".mlir", mode="w")
+        )
+        print(
+            module.operation.get_asm(enable_debug_info=True),
+            file=temp_file_mlir,
+        )
+        temp_file_mlir.flush()
+
+        temp_file_llvmir = raii.enter_context(
+            tempfile.NamedTemporaryFile(suffix=".ll", mode="w")
+        )
+        subp.check_call(
+            [
+                "mlir-translate",
+                "--mlir-to-llvmir",
+                temp_file_mlir.name,
+                "-o",
+                temp_file_llvmir.name,
+            ]
+        )
+        subp.check_call(
+            [
+                "clang",
+                "-shared",
                 "-o",
                 out_path,
                 temp_file_llvmir.name,

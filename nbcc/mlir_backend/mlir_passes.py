@@ -69,6 +69,14 @@ class Canonicalize(ModulePass):
     passname = "canonicalize"
 
 
+class Inline(ModulePass):
+    passname = "inline"
+
+
+class SymbolDCE(ModulePass):
+    passname = "symbol-dce"
+
+
 class TransformInterpreter(ModulePass):
     passname = "transform-interpreter"
 
@@ -82,6 +90,7 @@ class OneShotBufferize(ModulePass):
     bufferize_function_boundaries = PassOption(
         "bufferize-function-boundaries", bool_ctor
     )
+    copy_before_write = PassOption("copy-before-write", bool_ctor)
 
 
 class OwnershipBasedBufferDeallocation(ModulePass):
@@ -172,6 +181,10 @@ class ConvertIndexToLLVM(ModulePass):
 
 class ReconileUnrealizedCasts(ModulePass):
     passname = "reconcile-unrealized-casts"
+
+
+class ConvertTensorToLinalg(ModulePass):
+    passname = "convert-tensor-to-linalg"
 
 
 class ConvertLinalgToAffineLoops(ModulePass):
