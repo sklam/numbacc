@@ -1,29 +1,29 @@
 import logging
 import os
 import subprocess as subp
-from pprint import pprint
 import sys
 import tempfile
 from contextlib import ExitStack
+from pathlib import Path
+from pprint import pprint
 
 import sealir.rvsdg.grammar as rg
+import spy
 from egglog import EGraph
 from mlir import ir
+from sealir.ase import SExpr, TapeCrawler
 from sealir.eqsat.rvsdg_convert import egraph_conversion
 from sealir.eqsat.rvsdg_eqsat import GraphRoot
-from sealir.eqsat.rvsdg_extract import (
-    egraph_extraction,
-    CostModel as _CostModel,
-)
+from sealir.eqsat.rvsdg_extract import CostModel as _CostModel
+from sealir.eqsat.rvsdg_extract import egraph_extraction
 from sealir.rvsdg import format_rvsdg
-from sealir.ase import SExpr, TapeCrawler
 
+from nbcc.developer import TODO
 from nbcc.egraph.conversion import ExtendEGraphToRVSDG
-from nbcc.egraph.rules import egraph_optimize, egraph_convert_metadata
+from nbcc.egraph.rules import egraph_convert_metadata, egraph_optimize
 from nbcc.frontend import TranslationUnit, frontend
 from nbcc.frontend.grammar import TypeInfo
 from nbcc.mlir_backend.backend import Backend, Lowering, MDMap
-from nbcc.developer import TODO
 
 logging.disable(logging.INFO)
 
@@ -158,6 +158,8 @@ def make_shared(module: ir.Module, out_path: str):
                 temp_file_native_obj.name,
             ]
         )
+        spydir = os.path.dirname(spy.__file__)
+        spylinkdir = Path(spydir) / "libspy" / "build" / "native" / "release"
         subp.check_call(
             [
                 "clang",
@@ -165,7 +167,7 @@ def make_shared(module: ir.Module, out_path: str):
                 "-o",
                 out_path,
                 temp_file_native_obj.name,
-                "-Ldeps/spy/spy/libspy/build/native/release/",
+                f"-L{spylinkdir}",
                 "-lspy",
                 f"-L{libdir}",
                 f"-lmlir_c_runner_utils",
@@ -275,4 +277,9 @@ def expand_struct_type(tu: TranslationUnit, egraph):
 
 
 if __name__ == "__main__":
-    compile(sys.argv[1], sys.argv[2])
+    argv = sys.argv[1:]
+    if "-shared" in argv:
+        argv.remove("-shared")
+        compile_shared_lib(*argv)
+    else:
+        compile(*argv)
