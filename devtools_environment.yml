@@ -5,6 +5,7 @@ dependencies:
   - python-graphviz
   - black >=25
   - make
+  - conda-forge::pygal  # for pytest-benchmark to render SVG histograms
   - pip
   - pip:
     - numba-scfg 
