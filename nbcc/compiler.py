@@ -55,7 +55,11 @@ def compile_to_mlir(path: str) -> ir.Module:
         print(lowering.module.operation.get_asm())
     lowering.module.operation.verify()
 
-    print(lowering.module.dump())
+    print("-------------")
+    lowering.module.dump()
+
+    print("=============")
+    print(lowering.module.operation.get_asm())
     module = be.run_passes(module)
     print("After optimization")
     print(module)

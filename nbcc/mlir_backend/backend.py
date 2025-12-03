@@ -111,7 +111,9 @@ class Backend:
                         return self.i32
                     case "types::NoneType":
                         return self.none_type
-                    case "mlir_tensor_lib::make_tensor_type[f64]::TensorType":
+                    case "mlir::type::index":
+                        return self.index_type
+                    case "mlir_tensor_lib::make_tensor_type[mlir::type::f64]::TensorType":
                         TODO(
                             "TODO: lower_type mlir_tensor_lib::make_tensor_type[f64]::TensorType "
                         )
@@ -667,18 +669,27 @@ class Lowering:
 
                 c_name = FQN(callee_fqn.fullname).c_name
 
-                if callee_fqn.fullname.startswith("mlir::op::"):
+                fqn = FQN(callee_fqn.fullname)
+
+                if fqn.namespace.fullname == "mlir::op":
                     TODO("XXX: hardcode support of MLIR::OP ")
 
                     res = self._handle_mlir_op(
-                        FQN(callee_fqn.fullname).symbol_name,
+                        fqn.symbol_name,
                         resty,
                         lowered_args,
                     )
                     assert res.owner.verify()
                     return [io_val, res]
                     # self.declare_builtins(c_name, argtys, [resty])
-
+                elif fqn.namespace.fullname == "mlir::asm":
+                    res = self._handle_mlir_asm(
+                        fqn.symbol_name,
+                        resty,
+                        lowered_args,
+                    )
+                    assert res.owner.verify()
+                    return [io_val, res]
                 # if callee_fqn.fullname == "builtins::print_object":
                 #     TODO("XXX: hardcode support of builtins::print_object ")
                 #     with self.module_body:
@@ -709,6 +720,16 @@ class Lowering:
                 dim = tensor.dim(args[0], index)
                 out = tensor.empty([dim], element_type=self.be.f64)
                 return linalg.add(lhs, rhs, outs=[out])
+            case "linalg.add":
+                # linalg.add needs a region
+                [lhs, rhs, res] = args
+                res = linalg.add(lhs, rhs, outs=[res])
+                return res
+            case "linalg.mul":
+                # linalg.mul needs a region
+                [lhs, rhs, res] = args
+                res = linalg.mul(lhs, rhs, outs=[res])
+                return res
             case "bufferization.to_tensor":
                 [arg] = args
                 return bufferization.to_tensor(resty, arg, restrict=True)
@@ -717,6 +738,23 @@ class Lowering:
                 return bufferization.to_buffer(resty, arg)
             case _:
                 raise NotImplementedError(f"Unhandled MLIR op {mlir_op!r}")
+
+    def _handle_mlir_asm(self, mlir_op: str, resty, args) -> ir.Operation:
+        opname, _, attr = mlir_op.partition("$")
+        if attr:
+            irattrs = ir.Attribute.parse(attr)
+            if isinstance(irattrs, ir.DictAttr):
+                attrs = {
+                    named_attr.name: named_attr.attr for named_attr in irattrs
+                }
+            else:
+                raise ValueError("expects a dictattr")
+
+        else:
+            attrs = None
+        op = ir.Operation.create(opname, [resty], args, attributes=attrs)
+        print(op.get_asm())
+        return op.result
 
     # ## JIT Compilation
     #

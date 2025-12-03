@@ -37,5 +37,11 @@ class CallFQN(_Root):
     args: tuple[SExpr]
 
 
+class MLIRInlineAsm(_Root):
+    asm: str
+    io: SExpr
+    args: tuple[SExpr]
+
+
 class Grammar(_Grammar):
     start = rg.Grammar.start | _Root

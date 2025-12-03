@@ -32,6 +32,7 @@ from spy.location import Loc
 from . import grammar as sg
 from .restructure import SCFG, SpyBasicBlock, _SpyScfgRenderer, restructure
 from .spy_ast import Node, convert_to_node
+from nbcc.developer import TODO
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class TranslationUnit:
         self._symtabs = {}
         self._structs = {}
         self._builtins = {}
+        self._irtags = {}
 
     def add_function(self, fi: FunctionInfo) -> None:
         self._symtabs[fi.fqn] = fi
@@ -602,6 +604,15 @@ class ConvertToSExpr:
             ):
                 w_obj = vm.lookup_global(callee_fqn)
                 functype = w_obj.w_functype
+                if "mlir::asm" == w_obj.fqn.namespace.fullname:
+                    TODO(
+                        "implement custom sexpr conversion so this can be plumbed through"
+                    )
+                    """
+                    tags = vm.irtags[w_obj.fqn]
+                    grm.write(sg.MLIR_asm(asm=tags.data['asm'], io))
+                    """
+
                 # if callee_fqn.fullname.startswith("mlir_tensor::"):
                 #     breakpoint()
                 callee = grm.write(
