@@ -155,10 +155,11 @@ class Backend:
             mp.Canonicalize(),
             mp.Inline(),
             mp.LinalgGeneralizeNamedOps(),
+            mp.LinalgFuseElementwiseOps(),
         ).run(module.operation)
 
         print("After Phase 1")
-        module.dump()
+        print(module.operation.get_asm())
 
         from mlir.dialects.transform import interpreter
 
@@ -212,6 +213,15 @@ class Backend:
             mp.BufferHoisting(),
             mp.BufferLoopHoisting(),
             mp.FoldMemRefAliasOps(),
+            # The CSE and canonicalize take care of the reminding redundant memref ops
+            mp.CSE(),
+            mp.Canonicalize(),
+        ).run(module.operation)
+
+        print("After Phase 5 (prelower)")
+        print(module.operation.get_asm())
+
+        self._make_pass_pipeline(
             mp.OwnershipBasedBufferDeallocation(),
             mp.BufferDeallocationSimplification(),
             mp.BufferizationLowerDeallocations(),

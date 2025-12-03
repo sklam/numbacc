@@ -69,6 +69,10 @@ class Canonicalize(ModulePass):
     passname = "canonicalize"
 
 
+class CSE(ModulePass):
+    passname = "cse"
+
+
 class Inline(ModulePass):
     passname = "inline"
 
@@ -181,6 +185,10 @@ class ConvertIndexToLLVM(ModulePass):
 
 class ReconileUnrealizedCasts(ModulePass):
     passname = "reconcile-unrealized-casts"
+
+
+class LinalgFuseElementwiseOps(ModulePass):
+    passname = "linalg-fuse-elementwise-ops"
 
 
 class LinalgGeneralizeNamedOps(ModulePass):

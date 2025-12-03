@@ -52,6 +52,6 @@ to_memref = MLIR_op("bufferization.to_buffer", MemRefF64, (TensorF64,))
 def export_tensor_f64_add(a: MemRefF64, b: MemRefF64) -> MemRefF64:
     ta = to_tensor(a)
     tb = to_tensor(b)
-    tc = ta + tb
+    tc = ta + tb + tb + ta
     c = to_memref(tc)
     return c

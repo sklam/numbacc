@@ -146,6 +146,7 @@ def make_shared(module: ir.Module, out_path: str):
             [
                 "llc",
                 "-mcpu=native",
+                "-O3",
                 "-filetype=obj",
                 "--relocation-model=pic",
                 temp_file_llvm_opt.name,

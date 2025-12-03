@@ -40,6 +40,9 @@ def test_has_examples():
     assert example_dir.exists()
 
 
+NELEM = 500
+
+
 def test_mlir_tensor_lib_add():
     with compile_lib("mlir_tensor_lib.spy", "lib_mlir_tensor.so") as libname:
         lib = CDLL(libname)
@@ -49,9 +52,6 @@ def test_mlir_tensor_lib_add():
         print(func)
 
         # RUN
-
-        NELEM = 10000
-
         memref_1d_f64 = make_nd_memref_descriptor(1, c_double)
 
         A = np.arange(NELEM, dtype=np.float64) / 100
@@ -67,10 +67,10 @@ def test_mlir_tensor_lib_add():
         output = ranked_memref_to_numpy(out_memref)
         print(output)
 
-        np.testing.assert_allclose(output, A + B)
+        np.testing.assert_allclose(output, A + B + B + A)
 
 
-NELEM = 500
+benchmark_config = dict(rounds=500, iterations=5)
 
 
 def test_bench_baseline_add(benchmark):
@@ -78,10 +78,10 @@ def test_bench_baseline_add(benchmark):
     A = np.arange(NELEM, dtype=np.float64) / NELEM
     B = np.arange(NELEM, dtype=np.float64) / NELEM
 
-    res = A + B
-    print(res)
+    fn = lambda a, b: a + b + b + a
+    fn(A, B)  # warm up
 
-    benchmark(lambda: A + B)
+    benchmark.pedantic(fn, args=(A, B), **benchmark_config)
 
 
 def test_bench_mlir_tensor_lib_add(benchmark):
@@ -109,12 +109,12 @@ def test_bench_mlir_tensor_lib_add(benchmark):
         output = ranked_memref_to_numpy(out_memref)
         print(output)
 
-        np.testing.assert_allclose(output, A + B)
+        np.testing.assert_allclose(output, A + B + B + A)
 
         def cleanup(*args):
-            ranked_memref_to_numpy(args[0]) # cleanup
+            ranked_memref_to_numpy(args[0])  # cleanup
 
         # Requires pytest-benchmark >= 5.2.0 for teardown
-        benchmark.pedantic(func, args=args, teardown=cleanup, rounds=50, iterations=2)
-
-
+        benchmark.pedantic(
+            func, args=args, teardown=cleanup, **benchmark_config
+        )
