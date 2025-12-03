@@ -5,7 +5,7 @@ environments:
     - environment.yml
   dev:
     - py312_environment.yml
-    - mlir20_environment.yml
+    - mlir21_environment.yml
     - devtools_environment.yml
 
 commands:

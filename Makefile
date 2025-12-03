@@ -2,7 +2,7 @@ setup-workspace: deps/sealir deps/spy
 
 
 deps/sealir:
-	bash scripts/checkout.sh https://github.com/sklam/sealir wip/updates deps/sealir
+	bash scripts/checkout.sh https://github.com/sklam/sealir wip/updates_fixups deps/sealir
 
 deps/spy:
 	bash scripts/checkout.sh https://github.com/sklam/spy wip/numbacc_tensor deps/spy
