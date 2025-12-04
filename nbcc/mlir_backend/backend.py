@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections import defaultdict
 import ctypes
 from contextlib import contextmanager
@@ -111,6 +112,9 @@ class Backend:
                         return self.i32
                     case "types::NoneType":
                         return self.none_type
+
+                    case "mlir::type::()":
+                        return None
                     case "mlir::type::index":
                         return self.index_type
                     case "mlir_tensor_lib::make_tensor_type[mlir::type::f64]::TensorType":
@@ -143,6 +147,7 @@ class Backend:
 
         pipeline = mp.module_pipeline(*passes)
         pm = passmanager.PassManager.parse(pipeline, context=self.context)
+        pm.enable_ir_printing(print_after_change=True)
         pm.enable_verifier(True)
         return pm
 
@@ -161,7 +166,6 @@ class Backend:
         ).run(module.operation)
 
         print("After Phase 1")
-        print(module.operation.get_asm())
 
         from mlir.dialects.transform import interpreter
 
@@ -169,18 +173,22 @@ class Backend:
             [transform_op] = tmod.body.operations
             interpreter.apply_named_sequence(module, transform_op, tmod)
 
-        from .transforms import linalg_transform
+        if False:
+            # Turned off as LLVM is doing a very good job for the standard cases
+            from .transforms import linalg_tile_peel_vectorize
 
-        tmod = ir.Module.parse(linalg_transform, context=module.context)
-        try:
-            run_transform(module, tmod)
-        except Exception:
-            # Ignore transform error
-            TODO("there is a better way to handle transform dialect error")
-            pass
+            tmod = ir.Module.parse(
+                linalg_tile_peel_vectorize, context=module.context
+            )
+            try:
+                run_transform(module, tmod)
+            except Exception:
+                # Ignore transform error
+                TODO("there is a better way to handle transform dialect error")
+                pass
 
-        print("After Phase 2 (transform)")
-        print(module.operation.get_asm())
+            print("After Phase 2 (transform)")
+            print(module.operation.get_asm())
 
         self._make_pass_pipeline(
             mp.LoopInvariantCodeMotion(),
@@ -192,16 +200,16 @@ class Backend:
             mp.Canonicalize(),
         ).run(module.operation)
         print("After Phase 3 (cleanup)")
-        print(module.operation.get_asm())
 
         self._make_pass_pipeline(
+            mp.EliminateEmptyTensors(),
+            mp.EmptyTensorToAllocTensor(),
             # Bufferization
             mp.OneShotBufferize(bufferize_function_boundaries=True),
             mp.ConvertVectorToSCF(),
         ).run(module.operation)
 
         print("After Phase 4 (bufferize)")
-        print(module.operation.get_asm())
 
         self._make_pass_pipeline(
             # Affine passes goes after Bufferize
@@ -221,7 +229,6 @@ class Backend:
         ).run(module.operation)
 
         print("After Phase 5 (prelower)")
-        print(module.operation.get_asm())
 
         self._make_pass_pipeline(
             mp.OwnershipBasedBufferDeallocation(),
@@ -235,9 +242,9 @@ class Backend:
             mp.FinalizeMemRefToLLVM(),
             mp.ConvertMathToLibM(),
             mp.ConvertFuncToLLVM(),
+            mp.ConvertIndexToLLVM(),
             mp.ConvertArithToLLVM(),
             mp.ConvertCFToLLVM(),
-            mp.ConvertIndexToLLVM(),
             mp.ReconileUnrealizedCasts(),
         ).run(module.operation)
         return module
@@ -269,7 +276,11 @@ class Lowering:
             if port.name == internal_prefix("ret")
         ]
         [ti] = self.mdmap.lookup_typeinfo(retval)
-        return [self.be.lower_type(ti.type_expr)]
+        outs = [self.be.lower_type(ti.type_expr)]
+        # Remove return None
+        if outs == [self.be.none_type]:
+            return []
+        return outs
 
     def lower(self, root: rg.Func):
         """Expression Lowering
@@ -395,6 +406,10 @@ class Lowering:
                     outs = yield body
 
                 portnames = [p.name for p in body.ports]
+
+                if self.get_return_types(expr) == []:
+                    func.ReturnOp([])
+                    return
                 try:
                     retidx = portnames.index(internal_prefix("ret"))
                 except ValueError as e:
@@ -679,7 +694,8 @@ class Lowering:
                         resty,
                         lowered_args,
                     )
-                    assert res.owner.verify()
+                    if op := getattr(res, "owner", None):
+                        assert op.verify()
                     return [io_val, res]
                     # self.declare_builtins(c_name, argtys, [resty])
                 elif fqn.namespace.fullname == "mlir::asm":
@@ -688,7 +704,7 @@ class Lowering:
                         resty,
                         lowered_args,
                     )
-                    assert res.owner.verify()
+
                     return [io_val, res]
                 # if callee_fqn.fullname == "builtins::print_object":
                 #     TODO("XXX: hardcode support of builtins::print_object ")
@@ -730,17 +746,22 @@ class Lowering:
                 [lhs, rhs, res] = args
                 res = linalg.mul(lhs, rhs, outs=[res])
                 return res
-            case "bufferization.to_tensor":
-                [arg] = args
-                return bufferization.to_tensor(resty, arg, restrict=True)
-            case "bufferization.to_buffer":
-                [arg] = args
-                return bufferization.to_buffer(resty, arg)
+            case "bufferization.materialize_in_destination":
+                [src, dest] = args
+                res = bufferization.materialize_in_destination(
+                    result=resty,
+                    source=src,
+                    dest=dest,
+                    writable=True,
+                    restrict=True,
+                )
+                return res
             case _:
                 raise NotImplementedError(f"Unhandled MLIR op {mlir_op!r}")
 
-    def _handle_mlir_asm(self, mlir_op: str, resty, args) -> ir.Operation:
-        opname, _, attr = mlir_op.partition("$")
+    def _handle_mlir_asm(self, mlir_op: str, resty, args):
+        mlir_op = base64.b64decode(mlir_op.encode()).decode()
+        opname, _, attr = mlir_op.partition(" ")
         if attr:
             irattrs = ir.Attribute.parse(attr)
             if isinstance(irattrs, ir.DictAttr):
@@ -752,9 +773,12 @@ class Lowering:
 
         else:
             attrs = None
-        op = ir.Operation.create(opname, [resty], args, attributes=attrs)
-        print(op.get_asm())
-        return op.result
+
+        result_types = [resty] if resty else []
+        op = ir.Operation.create(opname, result_types, args, attributes=attrs)
+        op.verify()
+        if resty:
+            return op.result
 
     # ## JIT Compilation
     #

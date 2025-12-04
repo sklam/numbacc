@@ -89,6 +89,14 @@ class LowerVectorMask(FunctionPass):
     passname = "lower-vector-mask"
 
 
+class EliminateEmptyTensors(ModulePass):
+    passname = "eliminate-empty-tensors"
+
+
+class EmptyTensorToAllocTensor(ModulePass):
+    passname = "empty-tensor-to-alloc-tensor"
+
+
 class OneShotBufferize(ModulePass):
     passname = "one-shot-bufferize"
     bufferize_function_boundaries = PassOption(
@@ -139,6 +147,18 @@ class Mem2Reg(ModulePass):
 
 class LoopInvariantCodeMotion(ModulePass):
     passname = "loop-invariant-code-motion"
+
+
+class ScfForLoopCanonicalization(ModulePass):
+    passname = "scf-for-loop-canonicalization"
+
+
+class ScfForLoopRangeFolding(ModulePass):
+    passname = "scf-for-loop-range-folding"
+
+
+class ScfForLoopSpecialization(ModulePass):
+    passname = "scf-for-loop-specialization"
 
 
 class ConvertVectorToSCF(ModulePass):

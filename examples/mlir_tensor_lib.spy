@@ -6,6 +6,7 @@ from mlir import MLIR_Type, MLIR_op, MLIR_asm
 def MLIR_tensor_1d(dtype: MLIR_Type):
     return MLIR_Type("tensor<?x{}>", dtype)
 
+
 # Define dynamically sized 1D memref in MLIR
 @blue.generic
 def MLIR_memref_1d(dtype: MLIR_Type):
@@ -41,8 +42,8 @@ def make_tensor_type(DTYPE: MLIR_Type):
             rhs = other.__ll__
             # Write MLIR
             c0 = mlir_zero_index()
-            dim = mlir_tensor_dim(lhs, c0)
-            res = mlir_tensor_empty(dim)
+            dim = mlir_tensor_dim(lhs, c0)  # lhs.shape[0]
+            res = mlir_tensor_empty(dim)  # np.empty((dim,))
             res = mlir_linalg_add(lhs, rhs, res)
             # End MLIR
             return TensorType(res)
@@ -68,8 +69,16 @@ TensorF64 = make_tensor_type[F64]
 
 # Define conversion tensor <---> buffer
 # Note the tensor type is the wrapped Pythonic class
-to_tensor = MLIR_asm("bufferization.to_tensor {restrict}", TensorF64, (MemRefF64,))
+to_tensor = MLIR_asm(
+    "bufferization.to_tensor {restrict}", TensorF64, (MemRefF64,)
+)
 to_memref = MLIR_asm("bufferization.to_buffer", MemRefF64, (TensorF64,))
+bottom = MLIR_Type("()")
+materialize_in_destination = MLIR_asm(
+    "bufferization.materialize_in_destination {restrict,writable}",
+    bottom,
+    (TensorF64, MemRefF64),
+)
 
 
 def export_tensor_f64_add(a: MemRefF64, b: MemRefF64) -> MemRefF64:
@@ -80,9 +89,30 @@ def export_tensor_f64_add(a: MemRefF64, b: MemRefF64) -> MemRefF64:
     return c
 
 
-def export_tensor_f64_arrayexpr(a: MemRefF64, b: MemRefF64, c: MemRefF64) -> MemRefF64:
+def export_tensor_f64_add_out(
+    a: MemRefF64, b: MemRefF64, out: MemRefF64
+) -> None:
+    ta = to_tensor(a)
+    tb = to_tensor(b)
+    tc = ta + tb
+    materialize_in_destination(tc, out)
+
+
+def export_tensor_f64_arrayexpr(
+    a: MemRefF64, b: MemRefF64, c: MemRefF64
+) -> MemRefF64:
     ta = to_tensor(a)
     tb = to_tensor(b)
     tc = to_tensor(c)
     tres = (ta + tb) * (tc + ta)
     return to_memref(tres)
+
+
+def export_tensor_f64_arrayexpr_out(
+    a: MemRefF64, b: MemRefF64, c: MemRefF64, out: MemRefF64
+) -> None:
+    ta = to_tensor(a)
+    tb = to_tensor(b)
+    tc = to_tensor(c)
+    tres = (ta + tb) * (tc + ta)
+    materialize_in_destination(tres, out)

@@ -1,18 +1,32 @@
-linalg_transform = r"""
-  module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
-    %matches = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+import os.path
+from pathlib import Path
+from functools import lru_cache
 
-    transform.foreach %matches : !transform.any_op {
-        ^bb0(%0: !transform.any_op):
-        %op, %loop = transform.structured.tile_using_for %0 tile_sizes [8] : (!transform.any_op) -> (!transform.any_op, !transform.op<"scf.for">)
-        %peeled_op, %remainder = transform.loop.peel %loop {peel_front = false} : (!transform.op<"scf.for">) -> (!transform.any_op, !transform.any_op)
+_dir = Path(os.path.dirname(__file__))
 
-        %opinner = transform.structured.match ops{["linalg.generic"]} in %peeled_op : (!transform.any_op) -> !transform.any_op
-        transform.structured.vectorize %opinner vector_sizes [8] : !transform.any_op
-    }
 
-    transform.yield
-  }
-}
-"""
+@lru_cache(maxsize=None)
+def _load_transform_file(filename: str) -> str:
+    """Load a transform file on demand and cache the result."""
+    with open(_dir / "transform_sequences" / filename, "r") as fin:
+        return fin.read()
+
+
+# Cache for lazy-loaded attributes
+_cached_transforms = {}
+
+
+def __getattr__(name: str) -> str:
+    """Lazy load transform attributes on demand based on available .mlir files."""
+    if name in _cached_transforms:
+        return _cached_transforms[name]
+
+    # Check if {name}.mlir exists in transform_sequences directory
+    filename = f"{name}.mlir"
+    file_path = _dir / "transform_sequences" / filename
+
+    if file_path.exists():
+        _cached_transforms[name] = _load_transform_file(filename)
+        return _cached_transforms[name]
+
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

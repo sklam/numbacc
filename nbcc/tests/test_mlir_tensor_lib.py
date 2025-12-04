@@ -40,8 +40,13 @@ def test_has_examples():
     assert example_dir.exists()
 
 
-NELEM = 400
-benchmark_config = dict(rounds=100, iterations=3)
+NELEM = 400000
+
+benchmark_config = dict(rounds=200, iterations=1, warmup_rounds=1)
+"""
+NOTE:
+- iterations MUST be one for teardown only run once per round.
+"""
 
 
 def test_mlir_tensor_lib_add():
@@ -100,6 +105,64 @@ def test_mlir_tensor_lib_arrayexpr():
         np.testing.assert_allclose(output, (A + B) * (C + A))
 
 
+def test_mlir_tensor_lib_add_out():
+    with compile_lib("mlir_tensor_lib.spy", "lib_mlir_tensor.so") as libname:
+        lib = CDLL(libname)
+        func = getattr(
+            lib, "_mlir_ciface_spy_mlir_tensor_lib$export_tensor_f64_add_out"
+        )
+        print(func)
+
+        # RUN
+        memref_1d_f64 = make_nd_memref_descriptor(1, c_double)
+
+        A = np.arange(NELEM, dtype=np.float64) / NELEM
+        B = np.arange(NELEM, dtype=np.float64) / NELEM
+        Out = np.arange(NELEM, dtype=np.float64) / NELEM
+
+        argA = get_ranked_memref_descriptor(A)
+        argB = get_ranked_memref_descriptor(B)
+        argOut = get_ranked_memref_descriptor(Out)
+
+        args = [byref(argA), byref(argB), byref(argOut)]
+        func(*args)
+
+        print(Out)
+
+        np.testing.assert_allclose(Out, (A + B))
+
+
+def test_mlir_tensor_lib_arrayexpr_out():
+    with compile_lib("mlir_tensor_lib.spy", "lib_mlir_tensor.so") as libname:
+        lib = CDLL(libname)
+        func = getattr(
+            lib,
+            "_mlir_ciface_spy_mlir_tensor_lib$export_tensor_f64_arrayexpr_out",
+        )
+        print(func)
+
+        # RUN
+        memref_1d_f64 = make_nd_memref_descriptor(1, c_double)
+
+        A = np.arange(NELEM, dtype=np.float64) / NELEM
+        B = np.arange(NELEM, dtype=np.float64) / NELEM
+        C = np.arange(NELEM, dtype=np.float64) / NELEM
+        Out = np.arange(NELEM, dtype=np.float64) / NELEM
+
+        argA = get_ranked_memref_descriptor(A)
+        argB = get_ranked_memref_descriptor(B)
+        argC = get_ranked_memref_descriptor(C)
+        argOut = get_ranked_memref_descriptor(Out)
+
+        out_memref = (memref_1d_f64 * 1)()
+        args = [byref(argA), byref(argB), byref(argC), byref(argOut)]
+        func(*args)
+
+        print(Out)
+
+        np.testing.assert_allclose(Out, (A + B) * (C + A))
+
+
 def test_bench_baseline_add(benchmark):
 
     A = np.arange(NELEM, dtype=np.float64) / NELEM
@@ -109,6 +172,20 @@ def test_bench_baseline_add(benchmark):
     fn(A, B)  # warm up
 
     benchmark.pedantic(fn, args=(A, B), **benchmark_config)
+
+
+def test_bench_baseline_add_out(benchmark):
+
+    A = np.arange(NELEM, dtype=np.float64) / NELEM
+    B = np.arange(NELEM, dtype=np.float64) / NELEM
+    Out = np.arange(NELEM, dtype=np.float64) / NELEM
+
+    fn = np.add
+    fn(A, B, out=Out)  # warm up
+
+    benchmark.pedantic(
+        fn, args=(A, B), kwargs=dict(out=Out), **benchmark_config
+    )
 
 
 def test_bench_mlir_tensor_lib_add(benchmark):
@@ -195,3 +272,60 @@ def test_bench_mlir_tensor_lib_arrayexpr(benchmark):
         benchmark.pedantic(
             func, args=args, teardown=cleanup, **benchmark_config
         )
+
+
+def test_bench_mlir_tensor_lib_add_out(benchmark):
+    with compile_lib("mlir_tensor_lib.spy", "lib_mlir_tensor.so") as libname:
+        lib = CDLL(libname)
+
+        func = getattr(
+            lib, "_mlir_ciface_spy_mlir_tensor_lib$export_tensor_f64_add_out"
+        )
+        print(func)
+
+        # RUN
+        A = np.arange(NELEM, dtype=np.float64) / NELEM
+        B = np.arange(NELEM, dtype=np.float64) / NELEM
+        Out = np.arange(NELEM, dtype=np.float64) / NELEM
+
+        argA = get_ranked_memref_descriptor(A)
+        argB = get_ranked_memref_descriptor(B)
+        argOut = get_ranked_memref_descriptor(Out)
+
+        args = [byref(argA), byref(argB), byref(argOut)]
+        func(*args)
+
+        print(Out)
+
+        np.testing.assert_allclose(Out, (A + B))
+        benchmark.pedantic(func, args=args, **benchmark_config)
+
+
+def test_bench_mlir_tensor_lib_arrayexpr_out(benchmark):
+    with compile_lib("mlir_tensor_lib.spy", "lib_mlir_tensor.so") as libname:
+        lib = CDLL(libname)
+        func = getattr(
+            lib,
+            "_mlir_ciface_spy_mlir_tensor_lib$export_tensor_f64_arrayexpr_out",
+        )
+        print(func)
+
+        # RUN
+        A = np.arange(NELEM, dtype=np.float64) / NELEM
+        B = np.arange(NELEM, dtype=np.float64) / NELEM
+        C = np.arange(NELEM, dtype=np.float64) / NELEM
+        Out = np.arange(NELEM, dtype=np.float64) / NELEM
+
+        argA = get_ranked_memref_descriptor(A)
+        argB = get_ranked_memref_descriptor(B)
+        argC = get_ranked_memref_descriptor(C)
+        argOut = get_ranked_memref_descriptor(Out)
+
+        args = [byref(argA), byref(argB), byref(argC), byref(argOut)]
+        func(*args)
+        print(Out)
+
+        np.testing.assert_allclose(Out, (A + B) * (C + A))
+
+        # Requires pytest-benchmark >= 5.2.0 for teardown
+        benchmark.pedantic(func, args=args, **benchmark_config)

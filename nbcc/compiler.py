@@ -118,14 +118,17 @@ def make_shared(module: ir.Module, out_path: str):
         temp_file_mlir.flush()
 
         temp_file_llvmir = raii.enter_context(
-            tempfile.NamedTemporaryFile(suffix=".ll", mode="w")
+            tempfile.NamedTemporaryFile(suffix=".orig.ll", mode="w")
         )
         temp_file_llvm_opt = raii.enter_context(
-            tempfile.NamedTemporaryFile(suffix=".ll", mode="w")
+            tempfile.NamedTemporaryFile(suffix=".opt.ll", mode="w")
         )
         temp_file_native_obj = raii.enter_context(
             tempfile.NamedTemporaryFile(suffix=".o", mode="wb")
         )
+        target_triple = subp.check_output(
+            "llvm-config --host-target".split(), encoding="utf8"
+        ).strip()
         subp.check_call(
             [
                 "mlir-translate",
@@ -135,21 +138,29 @@ def make_shared(module: ir.Module, out_path: str):
                 temp_file_llvmir.name,
             ]
         )
+
+        print(temp_file_llvmir.name.center(80, "-"))
+        subp.check_call(["cat", temp_file_llvmir.name])
+
         subp.check_call(
             [
                 "opt",
-                "-passes=default<O3>,loop-vectorize,slp-vectorizer",
+                "-passes=default<O3>",
                 "-S",
-                "-mcpu=native",
+                f"-mtriple={target_triple}",
                 temp_file_llvmir.name,
                 "-o",
                 temp_file_llvm_opt.name,
             ]
         )
+
+        print(temp_file_llvm_opt.name.center(80, "-"))
+        subp.check_call(["cat", temp_file_llvm_opt.name])
+
+        print(80 * "=")
         subp.check_call(
             [
                 "llc",
-                "-mcpu=native",
                 "-O3",
                 "-filetype=obj",
                 "--relocation-model=pic",
