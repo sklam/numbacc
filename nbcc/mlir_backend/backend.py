@@ -96,6 +96,9 @@ class Backend:
             self.tensor_1d_f64 = ir.RankedTensorType.get(
                 shape=[unknown_dim], element_type=self.f64
             )
+            self.tensor_2d_f64 = ir.RankedTensorType.get(
+                shape=[unknown_dim, unknown_dim], element_type=self.f64
+            )
             self.memref_1d_f64 = ir.MemRefType.get(
                 shape=[unknown_dim], element_type=self.f64
             )
@@ -107,27 +110,28 @@ class Backend:
         """
         match ty:
             case sg.TypeExpr(name=str(name), args=()):
-                match name:
-                    case "builtins::i32":
-                        return self.i32
-                    case "types::NoneType":
-                        return self.none_type
+                fqn = FQN(name)
+                if name == "mlir::type::()":
+                    return None
+                elif fqn.namespace.fullname == "mlir::type":
+                    return ir.Type.parse(fqn.symbol_name, context=self.context)
+                else:
+                    match name:
+                        case "builtins::i32":
+                            return self.i32
+                        case "types::NoneType":
+                            return self.none_type
 
-                    case "mlir::type::()":
-                        return None
-                    case "mlir::type::index":
-                        return self.index_type
-                    case "mlir_tensor_lib::make_tensor_type[mlir::type::f64]::TensorType":
-                        TODO(
-                            "TODO: lower_type mlir_tensor_lib::make_tensor_type[f64]::TensorType "
-                        )
-                        return self.tensor_1d_f64
-                    case "mlir::type::tensor<?xf64>":
-                        TODO("TODO: lower_type mlir::type::tensor<?xf64> ")
-                        return self.tensor_1d_f64
-                    case "mlir::type::memref<?xf64>":
-                        TODO("TODO: lower_type mlir::type::memref<?xf64> ")
-                        return self.memref_1d_f64
+                        case "mlir_tensor_lib::make_tensor_type[mlir::type::f64]::TensorType":
+                            TODO(
+                                "TODO: lower_type mlir_tensor_lib::make_tensor_type[f64]::TensorType "
+                            )
+                            return self.tensor_1d_f64
+                        case "llm_tensor::make_tensor_type_2d[mlir::type::f64]::TensorType":
+                            TODO(
+                                "TODO: lower_type mlir_tensor_lib::make_tensor_type[f64]::TensorType "
+                            )
+                            return self.tensor_2d_f64
 
         raise NotImplementedError(f"unknown type: {ty}")
 
@@ -741,26 +745,123 @@ class Lowering:
                 [lhs, rhs, res] = args
                 res = linalg.add(lhs, rhs, outs=[res])
                 return res
+            case "linalg.sub":
+                # linalg.sub needs a region
+                [lhs, rhs, res] = args
+                res = linalg.sub(lhs, rhs, outs=[res])
+                return res
             case "linalg.mul":
                 # linalg.mul needs a region
                 [lhs, rhs, res] = args
                 res = linalg.mul(lhs, rhs, outs=[res])
                 return res
-            case "bufferization.materialize_in_destination":
-                [src, dest] = args
-                res = bufferization.materialize_in_destination(
-                    result=resty,
-                    source=src,
-                    dest=dest,
-                    writable=True,
-                    restrict=True,
-                )
+            case "linalg.div":
+                # linalg.div needs a region
+                [lhs, rhs, res] = args
+                res = linalg.div(lhs, rhs, outs=[res])
                 return res
+            case "linalg.exp":
+                # linalg.exp needs a region
+                [src, res] = args
+                res = linalg.exp(src, outs=[res])
+                return res
+            case "mlir_linalg_reduce_sum_inner_keepdims":
+                [arg] = args
+                dtype = arg.type.element_type
+                c0 = arith.constant(self.be.index_type, 0)
+                dim = tensor.dim(arg, c0)
+                init = tensor.empty(sizes=[dim], element_type=dtype)
+                neg_inf = arith.constant(self.be.f64, float(0))
+                init_filled = linalg.fill(neg_inf, outs=[init])
+                max_reduce = linalg.reduce(
+                    result=[init.type],
+                    inputs=[arg],
+                    inits=[init_filled],
+                    dimensions=[1],
+                )
+
+                body = max_reduce.owner.regions[0].blocks.append(dtype, dtype)
+                with ir.InsertionPoint(body):
+                    linalg.YieldOp(
+                        [arith.addf(body.arguments[0], body.arguments[1])]
+                    )
+
+                assert max_reduce.owner.verify()
+
+                c1 = arith.constant(self.be.index_type, 1)
+                dim1 = tensor.dim(arg, c1)
+                output = tensor.empty(sizes=(dim, dim1), element_type=dtype)
+                assert output.owner.verify()
+
+                bc = linalg.broadcast(
+                    input=max_reduce, outs=[output], dimensions=[1]
+                )
+                assert bc.verify()
+                return bc
+            case "mlir_linalg_reduce_max_inner_keepdims":
+                [arg] = args
+                dtype = arg.type.element_type
+                c0 = arith.constant(self.be.index_type, 0)
+                dim = tensor.dim(arg, c0)
+                init = tensor.empty(sizes=[dim], element_type=dtype)
+                neg_inf = arith.constant(self.be.f64, float("-inf"))
+                init_filled = linalg.fill(neg_inf, outs=[init])
+                max_reduce = linalg.reduce(
+                    result=[init.type],
+                    inputs=[arg],
+                    inits=[init_filled],
+                    dimensions=[1],
+                )
+
+                body = max_reduce.owner.regions[0].blocks.append(dtype, dtype)
+                with ir.InsertionPoint(body):
+                    linalg.YieldOp(
+                        [arith.maximumf(body.arguments[0], body.arguments[1])]
+                    )
+
+                assert max_reduce.owner.verify()
+
+                c1 = arith.constant(self.be.index_type, 1)
+                dim1 = tensor.dim(arg, c1)
+                output = tensor.empty(sizes=(dim, dim1), element_type=dtype)
+                assert output.owner.verify()
+
+                bc = linalg.broadcast(
+                    input=max_reduce, outs=[output], dimensions=[1]
+                )
+                assert bc.verify()
+                return bc
+
+                # DYN = ir.ShapedType.get_dynamic_size()
+                # expanded = tensor.expand_shape(
+                #     result=ir.RankedTensorType.get(
+                #         element_type=dtype, shape=[DYN, 1]
+                #     ),
+                #     src=max_reduce,
+                #     reassociation=[[0, 1]],
+                #     output_shape=[dim],
+                #     static_output_shape=[DYN, 1],
+                # )
+                # assert expanded.owner.verify()
+
+                # return tensor.cast(
+                #     ir.RankedTensorType.get(
+                #         element_type=dtype, shape=(DYN, DYN)
+                #     ),
+                #     expanded,
+                # )
             case _:
                 raise NotImplementedError(f"Unhandled MLIR op {mlir_op!r}")
 
     def _handle_mlir_asm(self, mlir_op: str, resty, args):
-        mlir_op = base64.b64decode(mlir_op.encode()).decode()
+        mlir_op = base64.urlsafe_b64decode(mlir_op.encode()).decode()
+        try:
+            first_split = mlir_op.index("$")
+        except ValueError:
+            pass
+        else:
+            mlir_op = mlir_op[:first_split]
+
         opname, _, attr = mlir_op.partition(" ")
         if attr:
             irattrs = ir.Attribute.parse(attr)

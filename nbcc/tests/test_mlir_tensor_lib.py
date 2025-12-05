@@ -327,5 +327,4 @@ def test_bench_mlir_tensor_lib_arrayexpr_out(benchmark):
 
         np.testing.assert_allclose(Out, (A + B) * (C + A))
 
-        # Requires pytest-benchmark >= 5.2.0 for teardown
         benchmark.pedantic(func, args=args, **benchmark_config)

@@ -1,0 +1,177 @@
+from mlir import MLIR_Type, MLIR_op, MLIR_asm
+
+
+# Define dynamically sized 1D tensor in MLIR
+@blue.generic
+def MLIR_tensor_2d(dtype: MLIR_Type):
+    return MLIR_Type("tensor<?x?x{}>", dtype)
+
+
+# Define dynamically sized 1D memref in MLIR
+@blue.generic
+def MLIR_memref_2d(dtype: MLIR_Type):
+    return MLIR_Type("memref<?x?x{}>", dtype)
+
+
+# Define a Pythonic wrapper to define the binary operations
+@blue.generic
+def make_tensor_type_2d(DTYPE: MLIR_Type):
+    # Define the lower level MLIR type of the tensor
+    T = MLIR_tensor_2d[DTYPE]
+
+    T_index = MLIR_Type("index")
+    # MLIR_asm are directly inline MLIR asm.
+    mlir_i64_to_index = MLIR_asm("arith.index_cast", T_index, (i32,))
+    mlir_index_to_i64 = MLIR_asm("arith.index_cast", i32, (T_index,))
+    mlir_tensor_dim = MLIR_asm("tensor.dim", T_index, (T, T_index))
+    mlir_tensor_empty = MLIR_asm("tensor.empty", T, (T_index, T_index))
+    # linalg.add is more complicated as it has regions
+    # so using MLIR_op uses the MLIR python binding to fill in all the necessary
+    # attributes.
+    mlir_linalg_add = MLIR_op("linalg.add", T, (T, T, T))
+    mlir_linalg_sub = MLIR_op("linalg.sub", T, (T, T, T))
+    mlir_linalg_mul = MLIR_op("linalg.mul", T, (T, T, T))
+    mlir_linalg_div = MLIR_op("linalg.div", T, (T, T, T))
+
+    mlir_linalg_exp = MLIR_op("linalg.exp", T, (T, T))
+
+    mlir_linalg_reduce_max_inner_keepdims = MLIR_op("mlir_linalg_reduce_max_inner_keepdims", T, (T,))
+    mlir_linalg_reduce_sum_inner_keepdims = MLIR_op("mlir_linalg_reduce_sum_inner_keepdims", T, (T,))
+
+    @typelift
+    class TensorType:
+        __ll__: T  # The low-level type is the MLIR tensor
+
+        def __new__(value: T) -> TensorType:
+            return TensorType.__lift__(value)
+
+        def __add__(self: TensorType, other: TensorType) -> TensorType:
+            lhs = self.__ll__
+            rhs = other.__ll__
+            # Write MLIR
+            c0 = mlir_i64_to_index(0)
+            c1 = mlir_i64_to_index(1)
+            dim0 = mlir_tensor_dim(lhs, c0)  # lhs.shape[0]
+            dim1 = mlir_tensor_dim(lhs, c1)  # lhs.shape[1]
+
+            res = mlir_tensor_empty(dim0, dim1)  # np.empty((dim0, dim1))
+            res = mlir_linalg_add(lhs, rhs, res)
+            # End MLIR
+            return TensorType(res)
+
+        def __sub__(self: TensorType, other: TensorType) -> TensorType:
+            lhs = self.__ll__
+            rhs = other.__ll__
+            # Write MLIR
+            c0 = mlir_i64_to_index(0)
+            c1 = mlir_i64_to_index(1)
+            dim0 = mlir_tensor_dim(lhs, c0)  # lhs.shape[0]
+            dim1 = mlir_tensor_dim(lhs, c1)  # lhs.shape[1]
+
+            res = mlir_tensor_empty(dim0, dim1)  # np.empty((dim0, dim1))
+            res = mlir_linalg_sub(lhs, rhs, res)
+            # End MLIR
+            return TensorType(res)
+
+        def __div__(self: TensorType, other: TensorType) -> TensorType:
+            lhs = self.__ll__
+            rhs = other.__ll__
+            # Write MLIR
+            c0 = mlir_i64_to_index(0)
+            c1 = mlir_i64_to_index(1)
+            dim0 = mlir_tensor_dim(lhs, c0)  # lhs.shape[0]
+            dim1 = mlir_tensor_dim(lhs, c1)  # lhs.shape[1]
+
+            res = mlir_tensor_empty(dim0, dim1)  # np.empty((dim0, dim1))
+            res = mlir_linalg_div(lhs, rhs, res)
+            # End MLIR
+            return TensorType(res)
+
+        def max_inner(self: TensorType) -> TensorType:
+            return TensorType(mlir_linalg_reduce_max_inner_keepdims(self.__ll__))
+
+        def sum_inner(self: TensorType) -> TensorType:
+            return TensorType(mlir_linalg_reduce_sum_inner_keepdims(self.__ll__))
+
+        def exp(self: TensorType) -> TensorType:
+            src = self.__ll__
+            # Write MLIR
+            c0 = mlir_i64_to_index(0)
+            c1 = mlir_i64_to_index(1)
+            dim0 = mlir_tensor_dim(src, c0)  # lhs.shape[0]
+            dim1 = mlir_tensor_dim(src, c1)  # lhs.shape[1]
+            res = mlir_tensor_empty(dim0, dim1)  # np.empty((dim0, dim1))
+            res = mlir_linalg_exp(src, res)
+            # End MLIR
+            return TensorType(res)
+
+        # def __mul__(self: TensorType, other: TensorType) -> TensorType:
+        #     lhs = self.__ll__
+        #     rhs = other.__ll__
+        #     # Write MLIR
+        #     c0 = mlir_zero_index()
+        #     dim = mlir_tensor_dim(lhs, c0)
+        #     res = mlir_tensor_empty(dim)
+        #     res = mlir_linalg_mul(lhs, rhs, res)
+        #     # End MLIR
+        #     return TensorType(res)
+
+    return TensorType
+
+
+# Alias for types
+F64 = MLIR_Type("f64")
+MemRefF64 = MLIR_memref_2d[F64]
+TensorF64 = make_tensor_type_2d[F64]
+
+# Define conversion tensor <---> buffer
+# Note the tensor type is the wrapped Pythonic class
+to_tensor = MLIR_asm(
+    "bufferization.to_tensor {restrict}", TensorF64, (MemRefF64,)
+)
+to_memref = MLIR_asm("bufferization.to_buffer", MemRefF64, (TensorF64,))
+bottom = MLIR_Type("()")
+materialize_in_destination = MLIR_asm(
+    "bufferization.materialize_in_destination {restrict,writable}",
+    bottom,
+    (TensorF64, MemRefF64),
+)
+
+
+def export_softmax(a: MemRefF64) -> MemRefF64:
+    ta = to_tensor(a)
+
+    exp_x = (ta - ta.max_inner()).exp()
+    tc = exp_x / exp_x.sum_inner()
+
+    c = to_memref(tc)
+    return c
+
+
+# def export_tensor_f64_add_out(
+#     a: MemRefF64, b: MemRefF64, out: MemRefF64
+# ) -> None:
+#     ta = to_tensor(a)
+#     tb = to_tensor(b)
+#     tc = ta + tb
+#     materialize_in_destination(tc, out)
+
+
+# def export_tensor_f64_arrayexpr(
+#     a: MemRefF64, b: MemRefF64, c: MemRefF64
+# ) -> MemRefF64:
+#     ta = to_tensor(a)
+#     tb = to_tensor(b)
+#     tc = to_tensor(c)
+#     tres = (ta + tb) * (tc + ta)
+#     return to_memref(tres)
+
+
+# def export_tensor_f64_arrayexpr_out(
+#     a: MemRefF64, b: MemRefF64, c: MemRefF64, out: MemRefF64
+# ) -> None:
+#     ta = to_tensor(a)
+#     tb = to_tensor(b)
+#     tc = to_tensor(c)
+#     tres = (ta + tb) * (tc + ta)
+#     materialize_in_destination(tres, out)
