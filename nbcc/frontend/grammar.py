@@ -13,6 +13,17 @@ class BuiltinOp(_Root):
     args: tuple[SExpr, ...]
 
 
+class IRTag(_Root):
+    value: SExpr
+    tag: str
+    data: tuple[SExpr, ...]
+
+
+class IRTagData(_Root):
+    key: str
+    value: str
+
+
 class TypeExpr(_Root):
     name: str
     args: tuple[SExpr, ...]

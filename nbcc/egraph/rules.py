@@ -53,6 +53,17 @@ def egraph_convert_metadata(mdlist: list[SExpr], memo) -> egglog.Vec[Metadata]:
                             return TypeExpr.simple(name)
 
                 raise NotImplementedError(md)
+            case sg.IRTagData(key=str(key), value=str(value)):
+                return IRTagData(key=key, value=value)
+            case sg.IRTag(value=value, tag=str(tag), data=tuple(data)):
+                if data:
+                    data_node = egglog.Vec[IRTagData](*map(gen, data))
+                else:
+                    data_node = egglog.Vec[IRTagData].empty()
+                anchor = memo[value]
+                if isinstance(anchor, WrapTerm):
+                    anchor = anchor.term
+                return Metadata.irtag(value=anchor, tag=tag, data=data_node)
             case _:
                 raise NotImplementedError(md)
 
@@ -73,9 +84,18 @@ class TypeExpr(egglog.Expr):
     def function(cls, args: egglog.Vec[TypeExpr]) -> TypeExpr: ...
 
 
+class IRTagData(egglog.Expr):
+    def __init__(self, key: egglog.StringLike, value: egglog.StringLike): ...
+
+
 class Metadata(egglog.Expr):
     @classmethod
     def typeinfo(cls, value: Term, type_expr: TypeExpr) -> Metadata: ...
+
+    @classmethod
+    def irtag(
+        cls, value: Term, tag: egglog.StringLike, data: egglog.Vec[IRTagData]
+    ) -> Metadata: ...
 
 
 @egglog.function

@@ -1,5 +1,9 @@
-from dataclasses import dataclass
-from typing import Callable
+import subprocess as subp
+from dataclasses import dataclass, field
+from typing import Any, Callable, Sequence
+
+import mlir.passmanager as passmanager
+from mlir import ir
 
 
 def module_pipeline(*passes) -> str:
@@ -8,26 +12,41 @@ def module_pipeline(*passes) -> str:
         match ps:
             case ModulePass() as mp:
                 pss = mp.get_unwrapped()
-                options = mp.get_options()
             case FunctionPass() as fp:
                 pss = fp.get_wrapped()
-                options = fp.get_options()
             case _:
                 raise ValueError(ps)
-        if not options:
-            parts.append(pss)
-        else:
-            parts.append(f"{pss}{{{options}}}")
+        parts.append(pss)
+
     return f"{ModulePass.anchor}({','.join(parts)})"
 
 
 @dataclass
 class PassOption:
     name: str
-    value_ctor: Callable[[object], str]
+    value_ctor: Callable[[Any], str]
 
 
-bool_ctor = lambda x: str(int(bool(x)))
+def bool_ctor(x: bool) -> str:
+    return str(int(bool(x)))
+
+
+def double_ctor(x: float) -> str:
+    return str(x)
+
+
+def string_ctor(x: str) -> str:
+    return str(x)
+
+
+def string_options_ctor(*options: str) -> Callable[[str], str]:
+    opts = set(options)
+
+    def ctor(x: str) -> str:
+        assert x in opts
+        return x
+
+    return ctor
 
 
 class Pass:
@@ -48,10 +67,11 @@ class Pass:
             options.append(f"{field.name}={field.value_ctor(v)}")
 
     def get_unwrapped(self) -> str:
-        return self.passname
+        output = f"{self.passname}{{{self.get_options()}}}"
+        return output
 
     def get_wrapped(self) -> str:
-        return f"{self.anchor}({self.passname})"
+        return f"{self.anchor}({self.get_unwrapped()})"
 
     def get_options(self) -> str:
         return " ".join(self.options)
@@ -157,8 +177,16 @@ class ScfForLoopRangeFolding(ModulePass):
     passname = "scf-for-loop-range-folding"
 
 
+class ScfForLoopToParallel(ModulePass):
+    passname = "scf-forall-to-parallel"
+
+
 class ScfForLoopSpecialization(ModulePass):
     passname = "scf-for-loop-specialization"
+
+
+class ScfParallelLoopFusion(ModulePass):
+    passname = "scf-parallel-loop-fusion"
 
 
 class ConvertVectorToSCF(ModulePass):
@@ -227,12 +255,34 @@ class ConvertLinalgToLoops(ModulePass):
     passname = "convert-linalg-to-loops"
 
 
+class ConvertLinalgToParallelLoops(ModulePass):
+    passname = "convert-linalg-to-parallel-loops"
+
+
+class ConvertLinalgToAffineLoops(ModulePass):
+    passname = "convert-linalg-to-affine-loops"
+
+
 class LowerAffine(FunctionPass):
     passname = "lower-affine"
 
 
 class AffineSimplifyStructures(FunctionPass):
     passname = "affine-simplify-structures"
+
+
+class AffineScalrep(FunctionPass):
+    passname = "affine-scalrep"
+
+
+class AffineLoopFusion(ModulePass):
+    passname = "affine-loop-fusion"
+
+    mode = PassOption(
+        "mode", string_options_ctor("greedy", "producer", "sibling")
+    )
+    maximal = PassOption("maximal", bool_ctor)
+    compute_tolerance = PassOption("compute-tolerance", double_ctor)
 
 
 class MemRefExpand(FunctionPass):
@@ -245,3 +295,77 @@ class NormalizeMemRefs(ModulePass):
 
 class ExpandStridedMetadata(ModulePass):
     passname = "expand-strided-metadata"
+
+
+@dataclass
+class SubProcessOpt:
+    passes: Sequence[Pass]
+    _last_stderr: str = field(default="", init=False)
+
+    def run(self, mod: ir.Module) -> ir.Module:
+        pipeline = module_pipeline(*self.passes)
+        ir_mod = mod.operation.get_asm(enable_debug_info=True)
+        # run mlir-opt as a subprocess
+        proc = subp.Popen(
+            [
+                "mlir-opt",
+                "-mlir-print-ir-after-all",
+                "-mlir-disable-threading",
+                f"--pass-pipeline={pipeline}",
+            ],
+            stdin=subp.PIPE,
+            stdout=subp.PIPE,
+            stderr=subp.PIPE,
+        )
+        # send the MLIR module to the stdin
+        stdout, stderr = proc.communicate(input=ir_mod.encode(), timeout=10)
+        self._last_stderr = stderr.decode()
+        # the optimized module is printed to stdout
+        opt_ir_mod = stdout.decode()
+        return ir.Module.parse(opt_ir_mod, context=mod.context)
+
+    @property
+    def last_stderr(self) -> str:
+        return self._last_stderr
+
+
+@dataclass
+class InProcessOpt:
+    passes: Sequence[Pass]
+
+    def run(self, mod: ir.Module) -> ir.Module:
+        pipeline = module_pipeline(*self.passes)
+        # clone the module
+        ir_mod = mod.operation.get_asm(enable_debug_info=True)
+        cloned_mod = ir.Module.parse(ir_mod, context=mod.context)
+        # run the passes
+        pm = passmanager.PassManager.parse(pipeline, context=mod.context)
+        pm.run(cloned_mod)
+        return cloned_mod
+
+
+class PassManager:
+    """
+    Note:
+    - `get_log()` is only available when this class is initialized with
+      `with_subprocess=True`.
+    """
+
+    def __init__(self, passes: Sequence[Pass], with_subprocess: bool):
+        self._with_subprocess = with_subprocess
+        if with_subprocess:
+            self._opt = SubProcessOpt(passes)
+        else:
+            self._opt = InProcessOpt(passes)
+
+    def run(self, mod: ir.Module) -> ir.Module:
+        """
+        Returns a optimized clone of `mod`
+        """
+        return self._opt.run(mod)
+
+    def get_log(self) -> str:
+        if self._with_subprocess:
+            return self._opt.last_stderr
+        else:
+            return ""

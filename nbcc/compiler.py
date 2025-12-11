@@ -22,7 +22,7 @@ from nbcc.developer import TODO
 from nbcc.egraph.conversion import ExtendEGraphToRVSDG
 from nbcc.egraph.rules import egraph_convert_metadata, egraph_optimize
 from nbcc.frontend import TranslationUnit, frontend
-from nbcc.frontend.grammar import TypeInfo
+from nbcc.frontend.grammar import IRTag, TypeInfo
 from nbcc.mlir_backend.backend import Backend, Lowering, MDMap
 
 logging.disable(logging.INFO)
@@ -48,11 +48,19 @@ def compile_to_mlir(path: str) -> ir.Module:
     mdmap.load(mdlist)
 
     module = be.make_module(path)
+
+    transform_map = {}
     for fname, rvsdg_ir in func_map.items():
         lowering = Lowering(be, module, mdmap, func_map)
         TODO("Not handling lowering argtypes")
-        lowering.lower(rvsdg_ir)
-        print(lowering.module.operation.get_asm())
+        fn_op = lowering.lower(rvsdg_ir)
+        print(fn_op.operation.get_asm())
+
+        irtags = lowering.irtags(rvsdg_ir)
+        print("== IRTAGS", irtags)
+        if mlir_transforms := irtags.get("mlir.transforms"):
+            transform_map[fn_op.name.value] = [v for k, v in mlir_transforms]
+
     lowering.module.operation.verify()
 
     print("-------------")
@@ -60,7 +68,8 @@ def compile_to_mlir(path: str) -> ir.Module:
 
     print("=============")
     print(lowering.module.operation.get_asm())
-    module = be.run_passes(module)
+    pprint(transform_map)
+    module = be.run_passes(module, transforms=transform_map)
     print("After optimization")
     print(module)
 
@@ -229,6 +238,8 @@ def middle_end(tu: TranslationUnit) -> tuple[dict[str, SExpr], list[SExpr]]:
         for rec in crawler.walk():
             node = rec.to_expr()
             if isinstance(node, TypeInfo):
+                mdlist.append(node)
+            elif isinstance(node, IRTag):
                 mdlist.append(node)
 
     assert len(func_nodes) >= 1

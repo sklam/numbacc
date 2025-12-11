@@ -86,6 +86,7 @@ def frontend(filename: str, *, view: bool = False) -> TranslationUnit:
     fn_type: dict[FQN, W_FuncType] = {}
 
     fqn_to_local_type = {}
+    vm.pp_globals()
     for fqn, w_obj in vm.fqns_by_modname(w_mod.name):
         print("?" * 80)
         print(fqn, "|", w_obj, "::", type(w_obj))
@@ -146,9 +147,6 @@ def convert_to_sexpr(
             cts.handle_region(scfg)
 
         region = cts.close_function(rb, func_node, fn_type)
-        for md in cts._metadata:
-            print(ase.as_tuple(md, depth=1))
-
         return region, cts._metadata
 
 
@@ -374,6 +372,19 @@ class ConvertToSExpr:
         )
         self.insert_typeinfo(body, fnty)
 
+        # add IRtags
+        irtag = self._vm.irtags[func_node.fqn]
+        if irtag.tag:
+            datalist = []
+            for k, v in irtag.data.items():
+                datalist.append(ctx.grm.write(sg.IRTagData(key=k, value=v)))
+
+            self._metadata.append(
+                ctx.grm.write(
+                    sg.IRTag(value=body, tag=irtag.tag, data=tuple(datalist))
+                )
+            )
+
         return ctx.grm.write(
             rg.Func(
                 fname=func_node.fqn.fullname,
@@ -438,7 +449,6 @@ class ConvertToSExpr:
             return last
 
     def codegen(self, block: BasicBlock) -> ase.SExpr | None:
-        print("AT", block.name)
         ctx = self._context
         grm = ctx.grm
         match block:

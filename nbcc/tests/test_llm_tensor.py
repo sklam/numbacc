@@ -41,7 +41,7 @@ def test_has_examples():
 
 
 DIM0 = 700
-DIM1 = 5000
+DIM1 = 2000
 
 benchmark_config = dict(rounds=200, iterations=1, warmup_rounds=1)
 """
@@ -94,6 +94,42 @@ def test_bench_nbcc_softmax(benchmark):
         lib = CDLL(libname)
         export_function = getattr(
             lib, "_mlir_ciface_spy_llm_tensor$export_softmax"
+        )
+        print(export_function)
+
+        # RUN
+
+        memref_2d_f64 = make_nd_memref_descriptor(2, c_double)
+
+        A = np.random.random((DIM0, DIM1)).astype(dtype=np.float64)
+
+        argA = get_ranked_memref_descriptor(A)
+
+        out_memref = (memref_2d_f64 * 1)()
+        # args = [out_memref, byref(argA), byref(argB)]
+        args = [out_memref, byref(argA)]
+        export_function(*args)
+
+        output = ranked_memref_to_numpy(out_memref)
+        print(output)
+
+        np.testing.assert_allclose(output, golden_softmax(A))
+
+        def cleanup(*args):
+            ranked_memref_to_numpy(args[0])  # cleanup
+
+        # Requires pytest-benchmark >= 5.2.0 for teardown
+        benchmark.pedantic(
+            export_function, args=args, teardown=cleanup, **benchmark_config
+        )
+
+
+def test_bench_nbcc_softmax_fused(benchmark):
+    with compile_lib("llm_tensor.spy", "llm_tensor.so") as libname:
+        lib = CDLL(libname)
+
+        export_function = getattr(
+            lib, "_mlir_ciface_spy_llm_tensor$export_softmax__transformed"
         )
         print(export_function)
 

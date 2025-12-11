@@ -65,6 +65,12 @@ class ExtendEGraphToRVSDG(_EGraphToRVSDG):
                 "type_expr": type_expr,
             }:
                 return grm.write(sg.TypeInfo(value=value, type_expr=type_expr))
+            case "Metadata.irtag", {
+                "value": value,
+                "tag": tag,
+                "data": data,
+            }:
+                return grm.write(sg.IRTag(value=value, tag=tag, data=data))
         raise NotImplementedError(key, op, children)
 
     def handle_TypeExpr(
@@ -77,4 +83,12 @@ class ExtendEGraphToRVSDG(_EGraphToRVSDG):
                 return grm.write(
                     sg.TypeExpr(name=".function", args=args.children)
                 )
+        raise NotImplementedError(op, children)
+
+    def handle_IRTagData(
+        self, key: str, op: str, children: dict | list, grm: sg.Grammar
+    ):
+        match op, children:
+            case "IRTagData", {"key": str(key), "value": str(value)}:
+                return grm.write(sg.IRTagData(key=key, value=value))
         raise NotImplementedError(op, children)

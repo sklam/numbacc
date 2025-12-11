@@ -13,11 +13,16 @@ import mlir.dialects.func as func
 import mlir.dialects.scf as scf
 import mlir.execution_engine as execution_engine
 import mlir.ir as ir
-import mlir.passmanager as passmanager
+
 import mlir.runtime as runtime
+from mlir.dialects.transform.interpreter import apply_named_sequence
+
+from mlir.ir import _GlobalDebug
+
 
 from spy.fqn import FQN
 
+from .mlir_passes import PassManager
 import numpy as np
 
 from mlir.dialects import llvm
@@ -33,6 +38,8 @@ from ..frontend import grammar as sg
 # Define the core MLIR backend class that handles type lowering and
 # expression compilation.
 
+
+# _GlobalDebug.flag = True
 _DEBUG = True
 
 
@@ -53,11 +60,14 @@ class MDMap:
     def load(self, mdlist):
         for md in mdlist:
             match md:
-                case sg.TypeInfo(value=value):
+                case sg.TypeInfo(value=value) | sg.IRTag(value=value):
                     self.mdmap[value].append(md)
                 case _:
                     breakpoint()
                     TODO(f"Unknown MD: {md}: {type(md)}")
+
+    def lookup_irtag(self, val: ase.SExpr) -> list[sg.TypeInfo]:
+        return [x for x in self.mdmap[val] if isinstance(x, sg.IRTag)]
 
     def lookup_typeinfo(self, val: ase.SExpr) -> list[sg.TypeInfo]:
         return [x for x in self.mdmap[val] if isinstance(x, sg.TypeInfo)]
@@ -75,6 +85,7 @@ class Backend:
 
     def __init__(self):
         self.context = context = ir.Context()
+        context.enable_multithreading(False)
         # context.allow_unregistered_dialects = True
         with context, ir.Location.name("Backend.__init__"):
             self.f32 = ir.F32Type.get(context=context)
@@ -146,55 +157,35 @@ class Backend:
         with self.context:
             return ir.Module.create(loc=ir.Location.name(module_name))
 
-    def _make_pass_pipeline(self, *passes):
-        from . import mlir_passes as mp
+    def _make_pass_pipeline(self, *passes, with_subprocess=True):
+        return PassManager(passes, with_subprocess=with_subprocess)
 
-        pipeline = mp.module_pipeline(*passes)
-        pm = passmanager.PassManager.parse(pipeline, context=self.context)
-        pm.enable_ir_printing(print_after_change=True)
-        pm.enable_verifier(True)
-        return pm
-
-    def run_passes(self, module):
+    def run_passes(
+        self, module: ir.Module, transforms: dict[str, Sequence[str]]
+    ) -> ir.Module:
         """MLIR Pass Pipeline
 
         Apply MLIR passes for optimization and lowering to LLVM IR.
         """
         from . import mlir_passes as mp
 
-        self._make_pass_pipeline(
+        for name in transforms:
+            self._add_noinline_to_callsite(module, name)
+
+        module = self._make_pass_pipeline(
             mp.Canonicalize(),
             mp.Inline(),
-            mp.LinalgGeneralizeNamedOps(),
-            mp.LinalgFuseElementwiseOps(),
         ).run(module.operation)
 
         print("After Phase 1")
 
-        from mlir.dialects.transform import interpreter
+        for fname, pass_seq in transforms.items():
+            self._run_per_function_transform(module, fname, pass_seq)
 
-        def run_transform(module: ir.Module, tmod: ir.Module):
-            [transform_op] = tmod.body.operations
-            interpreter.apply_named_sequence(module, transform_op, tmod)
-
-        if False:
-            # Turned off as LLVM is doing a very good job for the standard cases
-            from .transforms import linalg_tile_peel_vectorize
-
-            tmod = ir.Module.parse(
-                linalg_tile_peel_vectorize, context=module.context
-            )
-            try:
-                run_transform(module, tmod)
-            except Exception:
-                # Ignore transform error
-                TODO("there is a better way to handle transform dialect error")
-                pass
-
-            print("After Phase 2 (transform)")
-            print(module.operation.get_asm())
-
-        self._make_pass_pipeline(
+        module = self._make_pass_pipeline(
+            mp.Canonicalize(),
+            mp.LinalgGeneralizeNamedOps(),
+            mp.LinalgFuseElementwiseOps(),
             mp.LoopInvariantCodeMotion(),
             mp.FoldMemRefAliasOps(),
             # Vector
@@ -205,22 +196,30 @@ class Backend:
         ).run(module.operation)
         print("After Phase 3 (cleanup)")
 
-        self._make_pass_pipeline(
+        module = self._make_pass_pipeline(
             mp.EliminateEmptyTensors(),
             mp.EmptyTensorToAllocTensor(),
             # Bufferization
             mp.OneShotBufferize(bufferize_function_boundaries=True),
             mp.ConvertVectorToSCF(),
+            mp.Canonicalize(),
+            mp.CSE(),
         ).run(module.operation)
 
         print("After Phase 4 (bufferize)")
 
-        self._make_pass_pipeline(
+        module = self._make_pass_pipeline(
             # Affine passes goes after Bufferize
-            # mp.ConvertLinalgToAffineLoops(),
-            mp.ConvertLinalgToLoops(),
+            mp.ConvertLinalgToAffineLoops(),
+            mp.NormalizeMemRefs(),
+            mp.Canonicalize(),
+            mp.CSE(),
+            mp.SymbolDCE(),
             mp.ExpandStridedMetadata(),
+            mp.AffineScalrep(),
             mp.AffineSimplifyStructures(),
+            mp.AffineLoopFusion(mode="greedy", maximal=1),
+            # mp.ConvertLinalgToParallelLoops(),
             mp.LowerAffine(),
             mp.Canonicalize(),
             mp.PromoteBuffersToStack(),
@@ -232,9 +231,19 @@ class Backend:
             mp.Canonicalize(),
         ).run(module.operation)
 
+        print("After Phase 4.1 (SCF ops)")
+
+        module = self._make_pass_pipeline(
+            mp.ScfForLoopCanonicalization(),
+            mp.ScfForLoopRangeFolding(),
+            mp.ScfForLoopToParallel(),
+            mp.ScfParallelLoopFusion(),
+            mp.Canonicalize(),
+        ).run(module.operation)
+
         print("After Phase 5 (prelower)")
 
-        self._make_pass_pipeline(
+        module = self._make_pass_pipeline(
             mp.OwnershipBasedBufferDeallocation(),
             mp.BufferDeallocationSimplification(),
             mp.BufferizationLowerDeallocations(),
@@ -252,6 +261,48 @@ class Backend:
             mp.ReconileUnrealizedCasts(),
         ).run(module.operation)
         return module
+
+    def _add_noinline_to_callsite(self, module: ir.Module, fname: str):
+        def iterate_funcop(module: ir.Module):
+            for blk in module.body.region.blocks:
+                for modop in blk.operations:
+                    if isinstance(modop, func.FuncOp):
+                        yield modop
+
+        for f_op in iterate_funcop(module):
+            if f_op.name.value == fname:
+                attrmap = f_op.attributes
+                attrmap["no_inline"] = ir.UnitAttr.get(context=module.context)
+
+    def _run_per_function_transform(
+        self, module: ir.Module, fname: str, pass_seq: Sequence[str]
+    ):
+
+        def load_transform(tmod: ir.Module):
+            [transform_op] = tmod.body.operations
+
+            def runner(payload):
+                return apply_named_sequence(payload, transform_op, tmod)
+
+            return runner
+
+        from . import transforms
+
+        for pass_name in pass_seq:
+            tmod = ir.Module.parse(
+                getattr(transforms, pass_name), context=self.context
+            )
+            transform = load_transform(tmod)
+
+            for op in module.body.region.blocks[0].operations:
+                if op.name.value == fname:
+                    fn_op = op
+                    break
+
+            transform(fn_op.operation)
+
+            print(f"Transformed: {fname} after {pass_name}")
+            print(fn_op.operation.get_asm())
 
 
 class Lowering:
@@ -286,7 +337,16 @@ class Lowering:
             return []
         return outs
 
-    def lower(self, root: rg.Func):
+    def irtags(self, root: rg.Func) -> dict:
+        out = {}
+        if irtags := self.mdmap.lookup_irtag(root.body):
+            for irtag in irtags:
+                bin = out.setdefault(irtag.tag, [])
+                for irtagdata in irtag.data[0].children:
+                    bin.append((irtagdata.key, irtagdata.value))
+        return out
+
+    def lower(self, root: rg.Func) -> func.FuncOp:
         """Expression Lowering
 
         Lower RVSDG expressions to MLIR operations, handling control flow
@@ -373,7 +433,7 @@ class Lowering:
             cf.br([], fun.body.blocks[1])
 
         fun.operation.verify()
-        return module
+        return fun
 
     def _cast_return_value(self, val):
         return val
