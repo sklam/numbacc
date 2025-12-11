@@ -15,8 +15,12 @@ Setup environment:
 ```
 conda project prepare -n dev
 make setup-workspace
-conda project run build
+conda project run build   
 ```
+
+Note: 
+- subsequent update to `dev` environment can run `make build` in the environment
+
 
 Activation
 
